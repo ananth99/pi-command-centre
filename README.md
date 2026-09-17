@@ -1,6 +1,6 @@
 # pi Command Centre
 
-A [pi](https://github.com/earendil-works/pi-coding-agent) extension that turns your terminal into a **supervisor cockpit for Linear coding agents** (Ralph / BitGo Internal Agent, or any Linear agent). Launch one background worker per ticket, watch them drive the agent to green through a compact always-on beacon, and step in only when a real decision is needed — all via hotkeys, zero conversation bloat.
+A [pi](https://github.com/earendil-works/pi-coding-agent) extension that turns your terminal into a **supervisor cockpit for Linear coding agents** (Ralph or any Linear agent). Launch one background worker per ticket, watch them drive the agent to green through a compact always-on beacon, and step in only when a real decision is needed — all via hotkeys, zero conversation bloat.
 
 > Built live over one long session. It supervises agents the way you would by hand — polling status, nudging on stale CI, addressing review threads, flushing Linear's send queue — but on a 20-second reconciler loop instead of your attention.
 
@@ -88,12 +88,12 @@ Then `/reload` in pi (or restart). The beacon appears above your editor in every
 }
 ```
 
-- `CC_LINEAR_WORKSPACE` env var sets the Linear workspace slug for ticket deep-links (default `bitgo`).
+- `CC_LINEAR_WORKSPACE` env var sets the Linear workspace slug for ticket deep-links (default `linear`).
 - The worker prompt encodes an opinionated workflow (single signed commit, `feat(scope):` headers, branch naming `owner/<TICKET>-<desc>`, GitHub branch-rename API). Edit `buildCheckWorkerPrompt` in `index.ts` to match your team's conventions.
 
 ## Caveats
 
-- The check-worker prompt is tuned for a BitGo-style workflow; treat it as a starting template.
+- The check-worker prompt is tuned for a specific team workflow; treat it as a starting template.
 - Workers run real `pi` sessions and post real comments to Linear — start with `wakeups.staleMinutes` high and watch the first few wake-ups (`zmx tail <worker>`).
 - pi caps widget height; that's *why* the design is beacon + overlay console rather than one big dashboard.
 

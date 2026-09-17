@@ -9,7 +9,7 @@ import { matchesKey } from "@earendil-works/pi-tui";
 const execFileAsync = promisify(execFile);
 
 /** Linear workspace slug for ticket deep-links. Override with CC_LINEAR_WORKSPACE. */
-const LINEAR_WORKSPACE = process.env.CC_LINEAR_WORKSPACE ?? "bitgo";
+const LINEAR_WORKSPACE = process.env.CC_LINEAR_WORKSPACE ?? "linear";
 
 type WorkerStatus = "working" | "blocked" | "awaiting_approval" | "done" | "failed";
 type Confidence = "low" | "medium" | "high";
