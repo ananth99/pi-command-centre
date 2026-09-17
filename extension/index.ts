@@ -43,7 +43,7 @@ interface WorkerCheckpoint {
   // CC v2 — agent supervision fields
   linear_issue_id?: string;
   agent_name?: string;
-  ralph_session_id?: string;
+  agent_session_id?: string;
   session_status?: string;
   last_activity_at?: string;
   last_nudge_at?: string;
@@ -416,7 +416,7 @@ const DEFAULT_CC_CONFIG: CCConfig = {
     nudge: { model: "openrouter/~z-ai/glm-flash-latest", thinking: "low" },
   },
   wakeups: { staleMinutes: 10, checkTimeoutMinutes: 15 },
-  agent: { name: "ralph" },
+  agent: { name: "your-agent" },
 };
 
 async function readCCConfig(cwd: string): Promise<CCConfig> {
@@ -541,10 +541,10 @@ function buildCheckWorkerPrompt(p: {
     "- If the action you're about to take (verdict name) matches checkpoint.action AND the situation has not changed since last_nudge_at, do NOT re-nudge. Set status to awaiting_approval with proposed_action explaining what's stuck and what the human should do. This is the loop guard — it overrides the verdict table.",
     "",
     "## Progress narration (live dashboard)",
-    `As you work, after EACH major step, update the checkpoint's \"summary\" field with a short present-tense line of what you are doing right now (e.g. \"reading ralph's session activity\", \"checking CI on the PR\", \"posting nudge comment\"). Do it with a compact python3 one-liner that loads ${p.checkpointPath}, sets summary and updated_at (RFC3339 UTC from date -u +%Y-%m-%dT%H:%M:%SZ — never hand-write timestamps), and saves, keeping all other fields intact. This is what the human sees live.`,
+    `As you work, after EACH major step, update the checkpoint's \"summary\" field with a short present-tense line of what you are doing right now (e.g. \"reading agent session activity\", \"checking CI on the PR\", \"posting nudge comment\"). Do it with a compact python3 one-liner that loads ${p.checkpointPath}, sets summary and updated_at (RFC3339 UTC from date -u +%Y-%m-%dT%H:%M:%SZ — never hand-write timestamps), and saves, keeping all other fields intact. This is what the human sees live.`,
     "",
     "## Step 3 — Write checkpoint (ALWAYS, even on WAIT)",
-    `Update ${p.checkpointPath} as JSON: status, action (verdict name), summary (one line), ralph_session_id, session_status, last_activity_at, last_nudge_at (if you posted), ci_state, unresolved_thread_count, addressed_threads (append delegated threads), repeat_failures, evidence.pr (once known), updated_at = now, check_in_progress_at = null.`,
+    `Update ${p.checkpointPath} as JSON: status, action (verdict name), summary (one line), agent_session_id, session_status, last_activity_at, last_nudge_at (if you posted), ci_state, unresolved_thread_count, addressed_threads (append delegated threads), repeat_failures, evidence.pr (once known), updated_at = now, check_in_progress_at = null.`,
     `Then append an event via Bash: echo '{"type":"check_verdict","worker":"${p.workerId}","action":"<verdict>"}' >> ${p.eventsPath}`,
     "",
     "## Hard rules",
@@ -1448,7 +1448,7 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
       if (subcommand === "help") {
         showOutputPanel(ctx, [
           "# /cc — on | off | panel | takeover | clear | now | workers | inspect <id>",
-          "- /cc launch --tickets SCAAS-11150,SCAAS-11148 [--repo <path>] [--agent ralph] [--base-pr #875]",
+          "- /cc launch --tickets SCAAS-11150,SCAAS-11148 [--repo <path>] [--agent your-agent] [--base-pr #875]",
           "- /cc launch <worker_id> [--repo <path>] [--model p/m] [--thinking lvl] <objective>",
           "- /cc add-action <1-4> <title> · /cc approve <id> · /cc reject <id> [reason]",
           "- /cc reply <worker_id> <message> (answer an agent awaiting your input — posts @mention on its ticket)",
@@ -1649,7 +1649,7 @@ async function doReply(
     ctx.ui.notify(`Worker ${workerId} not found or has no linked ticket`, "warn");
     return;
   }
-  const agent = checkpoint.agent_name ?? "ralph";
+  const agent = checkpoint.agent_name ?? "your-agent";
   try {
     await execFileAsync(
       "linear",
@@ -1698,7 +1698,7 @@ async function replyHotkey(ctx: ExtensionCommandContext): Promise<void> {
     target = chosen;
   }
   const message = await ctx.ui.input(
-    `Reply to ${target.agent_name ?? "ralph"} on ${target.linear_issue_id}`,
+    `Reply to ${target.agent_name ?? "your-agent"} on ${target.linear_issue_id}`,
     "Your answer (posted as an @mention + queue-flushed):",
   );
   if (!message) return;

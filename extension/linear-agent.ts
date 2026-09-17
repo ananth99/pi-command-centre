@@ -1,7 +1,7 @@
 /**
  * Linear Agent extension
  *
- * Lets pi read and drive Linear agent sessions (e.g. Ralph or other agents)
+ * Lets pi read and drive Linear agent sessions (for any agent identity)
  * using ONLY the personal API key that the `linear` CLI already has.
  *
  * Key insight: you don't need the forbidden `agentActivityCreatePrompt` OAuth
@@ -120,12 +120,12 @@ export default function linearAgentExtension(pi: ExtensionAPI) {
 		promptSnippet: "Send a prompt to a Linear agent via an issue comment",
 		promptGuidelines: [
 			"Use only when the user explicitly wants to instruct a Linear agent.",
-			"Different Linear agents are separate identities. Always explicitly @mention the intended one by name in the comment body (e.g. '@ralph ...') -- do not assume a plain comment will be picked up, and do not default to @ralph unless the user asked for Ralph specifically.",
+			"Different Linear agents are separate identities. Always explicitly @mention the intended one by name in the comment body (e.g. '@your-agent ...') -- do not assume a plain comment will be picked up.",
 			"If unsure which agent owns a given issue, check linear_agent_sessions / linear_agent_activity first (the session's creator/sourceComment.user.name shows which agent has been responding) before prompting.",
 		],
 		parameters: Type.Object({
 			issueId: Type.String({ description: "Issue identifier (e.g. SCAAS-10909)" }),
-			body: Type.String({ description: "Comment/prompt body. Must explicitly @mention the intended agent by name (e.g. '@ralph') -- different agents are separate identities and may not pick up an unmentioned comment." }),
+			body: Type.String({ description: "Comment/prompt body. Must explicitly @mention the intended agent by name (e.g. '@your-agent') -- different agents are separate identities and may not pick up an unmentioned comment." }),
 			parentCommentId: Type.Optional(Type.String({ description: "Reply under this comment id (optional)" })),
 		}),
 		async execute(_id, params) {

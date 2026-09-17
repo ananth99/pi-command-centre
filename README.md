@@ -1,6 +1,6 @@
 # pi Command Centre
 
-A [pi](https://github.com/earendil-works/pi-coding-agent) extension that turns your terminal into a **supervisor cockpit for Linear coding agents** (Ralph or any Linear agent). Launch one background worker per ticket, watch them drive the agent to green through a compact always-on beacon, and step in only when a real decision is needed — all via hotkeys, zero conversation bloat.
+A [pi](https://github.com/earendil-works/pi-coding-agent) extension that turns your terminal into a **supervisor cockpit for Linear coding agents**. Launch one background worker per ticket, watch them drive the agent to green through a compact always-on beacon, and step in only when a real decision is needed — all via hotkeys, zero conversation bloat.
 
 > Built live over one long session. It supervises agents the way you would by hand — polling status, nudging on stale CI, addressing review threads, flushing Linear's send queue — but on a 20-second reconciler loop instead of your attention.
 
@@ -31,7 +31,7 @@ Slash commands still exist as a fallback (`/cc`, `/cc reply`, `/cc launch`, `/cc
 ## Launching workers
 
 ```
-/cc launch --tickets SCAAS-11150,SCAAS-11148 --repo ~/code/my-service --agent ralph
+/cc launch --tickets SCAAS-11150,SCAAS-11148 --repo ~/code/my-service --agent your-agent
 ```
 
 One supervisor worker per ticket. The first wake-up delegates to the agent (with your branch/PR conventions), then subsequent wake-ups drive it to a mergeable, signed, single-commit PR — escalating to **Needs You** only for merge approval, scope questions, or genuine blockers.
@@ -84,7 +84,7 @@ Then `/reload` in pi (or restart). The beacon appears above your editor in every
     "nudge":   { "model": "openrouter/~z-ai/glm-flash-latest",   "thinking": "low" }
   },
   "wakeups": { "staleMinutes": 10, "checkTimeoutMinutes": 15 },
-  "agent":   { "name": "ralph" }
+  "agent":   { "name": "your-agent" }
 }
 ```
 
