@@ -22,7 +22,7 @@ A [pi](https://github.com/earendil-works/pi-coding-agent) extension that turns y
 | `alt+n` | Open the console (leads with Needs You) |
 | `alt+r` | **Reply** to an agent awaiting your input (pick worker → type → posts @mention + flushes queue) |
 | `alt+i` | **Inspect** a worker's full checkpoint in a scrollable pager |
-| `alt+d` | **Close/dismiss** a worker |
+| `alt+k` | **Close/kill** a worker |
 
 Console navigation: `↑↓` / `PgUp` `PgDn` / `g` `G` scroll, `q` or `esc` close. Ticket & PR cells are `cmd`-clickable (OSC 8 links).
 

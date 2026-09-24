@@ -52,6 +52,10 @@ interface WorkerCheckpoint {
   addressed_threads?: string[];
   pending_threads?: string[];
   repeat_failures?: number;
+  // Deterministic CI-failure tracking: the check-worker records the raw facts
+  // (ci_state, ci_failure_signature); the tick code owns repeat_failures.
+  ci_failure_signature?: string | null;
+  last_observed_failure_signature?: string | null;
   base_pr?: string;
   action?: string;
   check_in_progress_at?: string | null;
@@ -516,14 +520,15 @@ function buildCheckWorkerPrompt(p: {
     `1. Sessions: linear api 'query { issue(id:"${p.ticket}") { title state { name } agentSessions { nodes { id status updatedAt } } } }' — pick the latest session for ${p.agentName}.`,
     "2. If a session exists, read its last few activities via linear api agentSession(id, activities) — the last activity timestamp is critical.",
     "3. If a PR exists: gh pr view <PR> --json state,mergeable,mergeStateStatus,reviewDecision,headRefName,commits ; gh pr checks <PR> ; gh api repos/<owner>/<repo>/pulls/<PR>/comments for review threads. Thread ids already in checkpoint.addressed_threads must NOT be re-raised.",
+    "CRITICAL — human-approval gates are NOT CI failures: checks like 'Validate Humans In The Loop' (from the ci-ai-checks workflow) only clear when human reviewers approve the PR. No agent action can ever fix them. When evaluating CI red, naming failing checks, or setting ci_state/ci_failure_signature, EXCLUDE these approval gates entirely. A PR whose only failing check is a human-approval gate is CI-green for verdict purposes: set ci_state to 'approval_pending' (not 'red'), ci_failure_signature to null, and take WAIT or the DONE-verdict awaiting_approval path — NEVER NUDGE_SPECIFIC, FIX_CI, or any other CI-red verdict for it.",
     `4. Branch check: PR headRefName MUST match ananth/${p.ticket}-<2-3-word-desc> (e.g. ananth/SCAAS-11150-order-read).`,
     "5. Commits: exactly ONE per branch; every commit must have verification.verified == true.",
     "6. If gh pr checks fails with a permission error (Resource not accessible), do NOT block on it — fall back to gh pr view --json mergeStateStatus (CLEAN=green, BLOCKED=red) and note in the checkpoint summary that CI could not be verified directly.",
     "",
     "## Step 2 — Verdict (EXACTLY ONE action, first match wins)",
     `- no_agent_session AND firstRun → DELEGATE: post a comment that @mentions ${p.agentName} explicitly: one-sentence objective + branch naming rule (ananth/${p.ticket}-<2-3-word-desc>) + draft PR + single signed commit + commit header feat(scaas): + succinct PR desc + no test evidence in desc.`,
-    "- CI red AND session active AND last activity < 20 min ago → WAIT: update checkpoint only.",
-    "- CI red AND repeat_failures >= 2 on same failure → NUDGE_SPECIFIC: comment @mentioning the agent with the exact failing log excerpt + one-line hint; increment repeat_failures.",
+    "- CI red AND session active AND last activity < 20 min ago → WAIT: update checkpoint only. ('CI red' here and below means real code-check failures only — human-approval gates are excluded per Step 1.)",
+    "- CI red AND repeat_failures >= 2 on same failure → NUDGE_SPECIFIC: comment @mentioning the agent with the exact failing log excerpt + one-line hint. repeat_failures is maintained by the Command Centre tick — NEVER modify it yourself.",
     "- CI red AND session stale > 30 min → FIX_CI: post a comment whose body is exactly /fix-ci",
     "- unresolved review threads (not in addressed_threads) AND session stale → NUDGE_THREADS: comment @mentioning the agent listing each unresolved thread URL, one per line; reply inline then push.",
     "- PR unmergeable/conflicts (e.g. stack base merged) → REBASE: comment @mentioning the agent: rebase onto master, retarget base if needed, single commit, re-sign.",
@@ -538,13 +543,13 @@ function buildCheckWorkerPrompt(p: {
     "- Read the last 2-3 comments on the ticket via linear api before posting.",
     "- If a prior wake-up already posted a comment on the SAME issue within the last 30 minutes AND the agent has not yet responded to it, that message is QUEUED and pending consumption — do NOT send a duplicate. Take the WAIT verdict instead.",
     "- If the agent HAS responded (queued message consumed) but the issue persists, THEN you may post a new message — but check repeat_failures first.",
-    "- If the action you're about to take (verdict name) matches checkpoint.action AND the situation has not changed since last_nudge_at, do NOT re-nudge. Set status to awaiting_approval with proposed_action explaining what's stuck and what the human should do. This is the loop guard — it overrides the verdict table.",
+    "- If the action you're about to take (verdict name) matches checkpoint.action AND the situation has not changed since last_nudge_at, do NOT re-nudge. Set status to awaiting_approval with proposed_action explaining what's stuck and what the human should do. This is the loop guard — it overrides the verdict table. EXCEPTION: never set awaiting_approval just because the PR is waiting on human CODEOWNER/reviewer approval — parked workers are never scanned for new review threads, and reviewers can leave actionable comments at any time. In that case keep status working with action WAIT so the tick keeps watching the PR.",
     "",
     "## Progress narration (live dashboard)",
     `As you work, after EACH major step, update the checkpoint's \"summary\" field with a short present-tense line of what you are doing right now (e.g. \"reading ralph's session activity\", \"checking CI on the PR\", \"posting nudge comment\"). Do it with a compact python3 one-liner that loads ${p.checkpointPath}, sets summary and updated_at (RFC3339 UTC from date -u +%Y-%m-%dT%H:%M:%SZ — never hand-write timestamps), and saves, keeping all other fields intact. This is what the human sees live.`,
     "",
     "## Step 3 — Write checkpoint (ALWAYS, even on WAIT)",
-    `Update ${p.checkpointPath} as JSON: status, action (verdict name), summary (one line), ralph_session_id, session_status, last_activity_at, last_nudge_at (if you posted), ci_state, unresolved_thread_count, addressed_threads (append delegated threads), repeat_failures, evidence.pr (once known), updated_at = now, check_in_progress_at = null.`,
+    `Update ${p.checkpointPath} as JSON: status, action (verdict name), summary (one line), ralph_session_id, session_status, last_activity_at, last_nudge_at (if you posted), ci_state ('red' ONLY if a real code check failed; 'approval_pending' if the only failing checks are human-approval gates; 'green' if CI passes; 'unknown' if not yet checked), ci_failure_signature (name of the failing CODE check when ci_state is red — e.g. "Release / Lint Commit Messages"; null when green or approval_pending), unresolved_thread_count, addressed_threads (append delegated threads), evidence.pr (once known), updated_at = now, check_in_progress_at = null. Do NOT touch repeat_failures or last_observed_failure_signature — the Command Centre tick owns those. Load the existing file first and preserve every field you are not explicitly updating (evidence.repo, evidence.dashboard_links, permissions, do_not_rename, known_repo_quirks, model, thinking, etc.) — never rewrite the checkpoint from memory, fields you drop break the tick's automation.`,
     `Then append an event via Bash: echo '{"type":"check_verdict","worker":"${p.workerId}","action":"<verdict>"}' >> ${p.eventsPath}`,
     "",
     "## Hard rules",
@@ -701,6 +706,15 @@ async function maybeSpawnCheckWorkers(ctx: { cwd: string }): Promise<void> {
       const inflightMin = (now - new Date(w.check_in_progress_at).getTime()) / 60000;
       if (inflightMin < config.wakeups.checkTimeoutMinutes) continue;
     }
+
+    // Deterministic repeat_failures — the tick owns this counter, not the
+    // check-worker LLM. Same failing check on consecutive ticks → +1;
+    // green or a different failure → reset to 0.
+    const sig =
+      w.ci_state === "red" ? (w.ci_failure_signature || "unknown") : null;
+    const prevSig = w.last_observed_failure_signature ?? null;
+    w.repeat_failures = sig && sig === prevSig ? (w.repeat_failures ?? 0) + 1 : 0;
+    w.last_observed_failure_signature = sig;
 
     w.check_in_progress_at = new Date().toISOString();
     const checkpointPath = join(paths.workersDir, `${w.worker_id}.json`);
@@ -862,15 +876,21 @@ async function autoCloseMergedWorkers(cwd: string): Promise<void> {
   for (const w of checkpoints) {
     if (w.status === "done" || w.status === "failed") continue;
     const pr = w.expected_pr || w.evidence?.pr;
-    const repo = w.evidence?.repo;
-    if (!pr || !repo) continue;
-    const prNum = pr.match(/(\d+)/)?.[1];
+    const prNum = pr?.match(/(\d+)/)?.[1];
     if (!prNum) continue;
+    const repo = w.evidence?.repo;
+    // The LLM sometimes rewrites evidence and drops `repo` — fall back to the PR URL's owner/repo.
+    const urlMatch = w.evidence?.pr
+      ? /github\.com\/([^/]+)\/([^/]+)\/pull\//.exec(w.evidence.pr)
+      : null;
+    if (!repo && !urlMatch) continue;
     const prev = prMergeChecked.get(w.worker_id);
     if (prev && Date.now() - prev < 60_000) continue;
     prMergeChecked.set(w.worker_id, Date.now());
     try {
-      const { stdout } = await execFileAsync("gh", ["pr", "view", prNum, "--json", "state,mergedAt"], {
+      const ghArgs = ["pr", "view", prNum, "--json", "state,mergedAt"];
+      if (!repo && urlMatch) ghArgs.push("-R", `${urlMatch[1]}/${urlMatch[2]}`);
+      const { stdout } = await execFileAsync("gh", ghArgs, {
         cwd: repo,
         timeout: 10_000,
       });
@@ -912,7 +932,7 @@ async function closeWorker(ctx: ExtensionCommandContext, workerId: string, reaso
   await renderDashboardWidget(ctx);
 }
 
-/** alt+d hotkey: pick a pending worker and close it. */
+/** alt+k hotkey: pick a pending worker and close it. */
 async function closeHotkey(ctx: ExtensionCommandContext): Promise<void> {
   const checkpoints = await readWorkerCheckpoints(ctx.cwd);
   const candidates = checkpoints.filter(
@@ -998,6 +1018,52 @@ async function probeAgentSessions(cwd: string): Promise<void> {
       }
     } catch {
       // keep previous reading
+    }
+
+    // Reconcile a worker parked in awaiting_approval when NEW review comments
+    // land on its PR. "Waiting on human codeowner review" must never be a
+    // parked state: parked workers are never scanned for review threads, and
+    // reviewers can leave actionable comments at any time.
+    if (w.status === "awaiting_approval" && w.evidence?.pr) {
+      const prMatch = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(w.evidence.pr);
+      if (prMatch) {
+        const [, owner, repo, prNum] = prMatch;
+        try {
+          const { stdout: ghOut } = await execFileAsync(
+            "gh",
+            [
+              "api",
+              `repos/${owner}/${repo}/pulls/${prNum}/comments`,
+              "--paginate",
+              "--jq",
+              "max_by(.created_at).created_at",
+            ],
+            { timeout: 8000, maxBuffer: 1024 * 1024 },
+          );
+          // --paginate prints one max per page; ISO strings sort chronologically.
+          const latestCommentAt = ghOut
+            .trim()
+            .split("\n")
+            .filter((l) => l && l !== "null")
+            .sort()
+            .pop();
+          if (latestCommentAt && Date.parse(latestCommentAt) > Date.parse(w.updated_at)) {
+            w.status = "working";
+            w.summary = `New review comments on PR #${prNum} landed after ${w.updated_at} — woke from awaiting_approval`;
+            // Deliberately NOT refreshing updated_at: the wake-up tick's
+            // staleMinutes gate keys off it, and we want an immediate spawn.
+            await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+            await appendEvent(cwd, {
+              type: "worker_reconciled",
+              worker_id: w.worker_id,
+              to: "working",
+              reason: "new_review_comments",
+            });
+          }
+        } catch {
+          // keep parked
+        }
+      }
     }
   }
 }
@@ -1331,8 +1397,8 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerShortcut("alt+d", {
-    description: "Command Centre: close/dismiss a worker",
+  pi.registerShortcut("alt+k", {
+    description: "Command Centre: close/kill a worker",
     handler: async (ctx) => {
       await closeHotkey(ctx as ExtensionCommandContext);
     },
