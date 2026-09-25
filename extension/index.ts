@@ -4,7 +4,15 @@ import { dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import {
+  matchesKey,
+  visibleWidth,
+  wrapTextWithAnsi,
+  truncateToWidth,
+  ScrollView,
+  Text,
+  type Component,
+} from "@earendil-works/pi-tui";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,6 +51,10 @@ interface WorkerCheckpoint {
   // CC v2 — agent supervision fields
   linear_issue_id?: string;
   agent_name?: string;
+  /** All PRs the check worker must scan (threads/CI), in stack order —
+   * for single-PR tickets this is just [evidence.pr]. evidence.pr itself is
+   * ONLY the auto-close target (the PR whose merge retires the worker). */
+  scan_prs?: string[];
   ralph_session_id?: string;
   session_status?: string;
   last_activity_at?: string;
@@ -486,6 +498,8 @@ function buildCheckWorkerPrompt(p: {
   agentName: string;
   expectedPr?: string;
   basePr?: string;
+  /** All live PRs to scan (stack order). Undefined/empty → scan only the target PR. */
+  scanPrs?: string[];
   repoPath: string;
   checkpointPath: string;
   eventsPath: string;
@@ -494,8 +508,11 @@ function buildCheckWorkerPrompt(p: {
   knownRepoQuirks?: string[];
 }): string {
   const prHint = p.expectedPr
-    ? `Target PR: ${p.expectedPr}`
+    ? `Target PR (auto-close anchor): ${p.expectedPr}`
     : "No target PR known yet — find it from the ticket's comments/linked PRs. Record it as evidence.pr once found.";
+  const scanHint = p.scanPrs?.length
+    ? `MULTI-PR STACK — scan EVERY PR below on every wake-up (threads, CI, commits, merge state). Threads on ANY scan PR are this worker's responsibility; NUDGE_THREADS lists them all. scan order: ${p.scanPrs.join(" → ")}. Target PR above is only the merge/auto-close anchor.`
+    : "";
   const baseHint = p.basePr ? `Stack base PR: ${p.basePr}.` : "";
   const quirksHint = p.knownRepoQuirks?.length
     ? ["KNOWN REPO QUIRKS (read before acting):", ...p.knownRepoQuirks.map((q) => `- ${q}`)].join("\n")
@@ -510,6 +527,7 @@ function buildCheckWorkerPrompt(p: {
       ? "This is the FIRST run: the ticket may have no agent session and no PR yet — your likely action is the DELEGATE verdict."
       : "",
     prHint,
+    scanHint,
     baseHint,
     quirksHint,
     "",
@@ -519,14 +537,14 @@ function buildCheckWorkerPrompt(p: {
     "## Step 1 — Gather (Bash: linear + gh CLIs)",
     `1. Sessions: linear api 'query { issue(id:"${p.ticket}") { title state { name } agentSessions { nodes { id status updatedAt } } } }' — pick the latest session for ${p.agentName}.`,
     "2. If a session exists, read its last few activities via linear api agentSession(id, activities) — the last activity timestamp is critical.",
-    "3. If a PR exists: gh pr view <PR> --json state,mergeable,mergeStateStatus,reviewDecision,headRefName,commits ; gh pr checks <PR> ; gh api repos/<owner>/<repo>/pulls/<PR>/comments for review threads. Thread ids already in checkpoint.addressed_threads must NOT be re-raised.",
+    "3. If a PR exists: gh pr view <PR> --json state,mergeable,mergeStateStatus,reviewDecision,headRefName,commits ; gh pr checks <PR> ; gh api repos/<owner>/<repo>/pulls/<PR>/comments for review threads — REPEAT for EVERY PR in the scan list above, not just the target. Thread ids already in checkpoint.addressed_threads must NOT be re-raised — EXCEPT when a comment on that thread is NEWER than the agent's last reply on it (a reviewer follow-up): then the thread is NOT addressed — re-raise it, and REMOVE its id from addressed_threads in your checkpoint write. addressed_threads is a latch, follow-ups break the latch.",
     "CRITICAL — human-approval gates are NOT CI failures: checks like 'Validate Humans In The Loop' (from the ci-ai-checks workflow) only clear when human reviewers approve the PR. No agent action can ever fix them. When evaluating CI red, naming failing checks, or setting ci_state/ci_failure_signature, EXCLUDE these approval gates entirely. A PR whose only failing check is a human-approval gate is CI-green for verdict purposes: set ci_state to 'approval_pending' (not 'red'), ci_failure_signature to null, and take WAIT or the DONE-verdict awaiting_approval path — NEVER NUDGE_SPECIFIC, FIX_CI, or any other CI-red verdict for it.",
     `4. Branch check: PR headRefName MUST match ananth/${p.ticket}-<2-3-word-desc> (e.g. ananth/SCAAS-11150-order-read).`,
     "5. Commits: exactly ONE per branch; every commit must have verification.verified == true.",
     "6. If gh pr checks fails with a permission error (Resource not accessible), do NOT block on it — fall back to gh pr view --json mergeStateStatus (CLEAN=green, BLOCKED=red) and note in the checkpoint summary that CI could not be verified directly.",
     "",
     "## Step 2 — Verdict (EXACTLY ONE action, first match wins)",
-    `- no_agent_session AND firstRun → DELEGATE: post a comment that @mentions ${p.agentName} explicitly: one-sentence objective + branch naming rule (ananth/${p.ticket}-<2-3-word-desc>) + draft PR + single signed commit + commit header feat(scaas): + succinct PR desc + no test evidence in desc.`,
+    `- no_agent_session AND firstRun → DELEGATE: post a comment that @mentions ${p.agentName} explicitly: one-sentence objective + branch naming rule (ananth/${p.ticket}-<2-3-word-desc>) + draft PR + single signed commit + commit header feat(scaas): + succinct PR desc + no test evidence in desc. MULTI-PR SIZING: estimate the ticket's changed lines first (new service/handler + its tests + docs — tests typically ≈ 50-60% of a slice). If the estimate exceeds ~500 changed lines, mandate a linear STACK of 2-3 PRs split on file boundaries (e.g. shared types/glue → core logic → integration/webhook), each ≤~500 lines: each slice gets its own branch stacked on the previous slice's branch, its own docs updates, ONE signed commit; all branches named ananth/${p.ticket}-<slice>. Instruct the agent to record ALL PR numbers on the ticket and keep evidence.pr pointing at the STACK TOP (merge-retire anchor) while listing the full scan order for the supervisor.`,
     "- CI red AND session active AND last activity < 20 min ago → WAIT: update checkpoint only. ('CI red' here and below means real code-check failures only — human-approval gates are excluded per Step 1.)",
     "- CI red AND repeat_failures >= 2 on same failure → NUDGE_SPECIFIC: comment @mentioning the agent with the exact failing log excerpt + one-line hint. repeat_failures is maintained by the Command Centre tick — NEVER modify it yourself.",
     "- CI red AND session stale > 30 min → FIX_CI: post a comment whose body is exactly /fix-ci",
@@ -726,6 +744,7 @@ async function maybeSpawnCheckWorkers(ctx: { cwd: string }): Promise<void> {
       agentName: w.agent_name ?? config.agent.name,
       expectedPr: w.expected_pr,
       basePr: w.base_pr,
+      scanPrs: w.scan_prs ?? (w.evidence?.pr ? [w.evidence.pr] : []),
       repoPath: w.evidence?.repo ?? ctx.cwd,
       checkpointPath,
       eventsPath: paths.eventsFile,
@@ -759,34 +778,22 @@ const commandCentreModeSessions = new Set<string>();
 const dashboardHiddenSessions = new Set<string>();
 const blockedControllerSessions = new Set<string>();
 
-/** Word-wrap to at most maxLines; ellipsize only what truly overflows. */
+/** Word-wrap to at most maxLines (wide-char aware); ellipsize overflow. */
 function wrapText(text: string, width: number, maxLines: number): string[] {
   const clean = text.replace(/\s+/g, " ").trim();
-  const out: string[] = [];
-  let rest = clean;
-  while (rest.length && out.length < maxLines) {
-    if (rest.length <= width) {
-      out.push(rest);
-      rest = "";
-      break;
-    }
-    let cut = rest.lastIndexOf(" ", width);
-    if (cut < width * 0.6) cut = width;
-    out.push(rest.slice(0, cut));
-    rest = rest.slice(cut).trim();
-  }
-  if (rest.length && out.length > 0) {
-    const last = out[out.length - 1] ?? "";
-    out[out.length - 1] = `${last.slice(0, Math.max(1, width - 1))}…`;
-  }
-  return out;
+  if (!clean) return [""];
+  const all = wrapTextWithAnsi(clean, width);
+  if (all.length <= maxLines) return all;
+  const kept = all.slice(0, maxLines);
+  const rest = all.slice(maxLines - 1).join(" ");
+  kept[maxLines - 1] = truncateToWidth(rest, width, "\u2026");
+  return kept;
 }
 
 function padCell(value: string, width: number) {
   const clean = value.replace(/\s+/g, " ").trim();
-  if (clean.length <= width) return clean.padEnd(width, " ");
-  if (width <= 1) return clean.slice(0, width);
-  return `${clean.slice(0, width - 1)}…`;
+  const t = truncateToWidth(clean, width, "\u2026");
+  return t + " ".repeat(Math.max(0, width - visibleWidth(t)));
 }
 
 function tableLine(columns: Array<{ value: string; width: number; url?: string }>) {
@@ -956,6 +963,48 @@ async function closeHotkey(ctx: ExtensionCommandContext): Promise<void> {
   await closeWorker(ctx, target.worker_id, "manual dismiss");
 }
 
+/** alt+a action mode: pick a worker → pick an action → execute. Replaces 3 bespoke pickers. */
+async function actHotkey(ctx: ExtensionCommandContext): Promise<void> {
+  const checkpoints = await readWorkerCheckpoints(ctx.cwd);
+  if (!checkpoints.length) {
+    ctx.ui.notify("No workers", "info");
+    return;
+  }
+  const active = checkpoints.filter((w) => w.status !== "done" && w.status !== "failed");
+  const pool = active.length ? active : checkpoints;
+  const pick = await ctx.ui.select(
+    "Pick a worker",
+    pool.map((w) => `${w.worker_id} (${w.status}, ${w.linear_issue_id ?? "-"})`),
+  );
+  if (!pick) return;
+  const target = pool.find((w) => pick.startsWith(w.worker_id));
+  if (!target) return;
+  const action = await ctx.ui.select(`Act on ${target.worker_id}`, [
+    "Reply to its agent",
+    "Inspect checkpoint",
+    "Kill / close worker",
+  ]);
+  if (!action) return;
+  if (action.startsWith("Reply")) {
+    const message = await ctx.ui.input(
+      `Reply to ${target.agent_name ?? "ralph"} on ${target.linear_issue_id ?? "its ticket"}`,
+      "Your answer (posted as an @mention + queue-flushed):",
+    );
+    if (message) await doReply(ctx, target.worker_id, message);
+  } else if (action.startsWith("Inspect")) {
+    const paths = await ensureState(ctx.cwd);
+    const checkpoint = await readJson<WorkerCheckpoint | null>(
+      join(paths.workersDir, `${target.worker_id}.json`),
+      null,
+    );
+    if (checkpoint) {
+      await showPager(ctx, `Checkpoint — ${target.worker_id}`, JSON.stringify(checkpoint, null, 2));
+    }
+  } else if (action.startsWith("Kill")) {
+    await closeWorker(ctx, target.worker_id, "killed via action mode");
+  }
+}
+
 /** alt+i hotkey: pick a worker and show its full checkpoint in the pager. */
 async function inspectHotkey(ctx: ExtensionCommandContext): Promise<void> {
   const checkpoints = await readWorkerCheckpoints(ctx.cwd);
@@ -1025,15 +1074,24 @@ async function probeAgentSessions(cwd: string): Promise<void> {
     // parked state: parked workers are never scanned for review threads, and
     // reviewers can leave actionable comments at any time.
     if (w.status === "awaiting_approval" && w.evidence?.pr) {
-      const prMatch = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(w.evidence.pr);
-      if (prMatch) {
-        const [, owner, repo, prNum] = prMatch;
-        try {
+      // Multi-PR tickets: check every PR the worker scans (scan_prs, plus the
+      // auto-close anchor) — a comment on ANY slice of the stack is a wake-up.
+      const prUrls = [...new Set([...(w.scan_prs ?? []), w.evidence.pr].filter(Boolean))];
+      type PrRef = { owner: string; repo: string; prNum: string };
+      const prRefs: PrRef[] = [];
+      for (const url of prUrls) {
+        const m = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(url);
+        if (m) prRefs.push({ owner: m[1], repo: m[2], prNum: m[3] });
+      }
+      let newestCommentAt: string | undefined;
+      let newestPrNum: string | undefined;
+      try {
+        for (const ref of prRefs) {
           const { stdout: ghOut } = await execFileAsync(
             "gh",
             [
               "api",
-              `repos/${owner}/${repo}/pulls/${prNum}/comments`,
+              `repos/${ref.owner}/${ref.repo}/pulls/${ref.prNum}/comments`,
               "--paginate",
               "--jq",
               "max_by(.created_at).created_at",
@@ -1041,34 +1099,42 @@ async function probeAgentSessions(cwd: string): Promise<void> {
             { timeout: 8000, maxBuffer: 1024 * 1024 },
           );
           // --paginate prints one max per page; ISO strings sort chronologically.
-          const latestCommentAt = ghOut
+          const latest = ghOut
             .trim()
             .split("\n")
             .filter((l) => l && l !== "null")
             .sort()
             .pop();
-          if (latestCommentAt && Date.parse(latestCommentAt) > Date.parse(w.updated_at)) {
-            w.status = "working";
-            w.summary = `New review comments on PR #${prNum} landed after ${w.updated_at} — woke from awaiting_approval`;
-            // Deliberately NOT refreshing updated_at: the wake-up tick's
-            // staleMinutes gate keys off it, and we want an immediate spawn.
-            await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
-            await appendEvent(cwd, {
-              type: "worker_reconciled",
-              worker_id: w.worker_id,
-              to: "working",
-              reason: "new_review_comments",
-            });
+          if (latest && (!newestCommentAt || latest > newestCommentAt)) {
+            newestCommentAt = latest;
+            newestPrNum = ref.prNum;
           }
-        } catch {
-          // keep parked
         }
+        if (
+          newestCommentAt &&
+          newestPrNum &&
+          Date.parse(newestCommentAt) > Date.parse(w.updated_at)
+        ) {
+          w.status = "working";
+          w.summary = `New review comments on PR #${newestPrNum} landed after ${w.updated_at} — woke from awaiting_approval`;
+          // Deliberately NOT refreshing updated_at: the wake-up tick's
+          // staleMinutes gate keys off it, and we want an immediate spawn.
+          await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+          await appendEvent(cwd, {
+            type: "worker_reconciled",
+            worker_id: w.worker_id,
+            to: "working",
+            reason: "new_review_comments",
+          });
+        }
+      } catch {
+        // keep parked
       }
     }
   }
 }
 
-async function buildConsoleLines(cwd: string): Promise<string[]> {
+async function buildConsoleLines(cwd: string, width = 100): Promise<string[]> {
   const checkpoints = await readWorkerCheckpoints(cwd);
   const paths = await ensureState(cwd);
   const queue = await readJson<QueueState>(paths.queueFile, { items: [] });
@@ -1120,133 +1186,112 @@ async function buildConsoleLines(cwd: string): Promise<string[]> {
   const dormantCount = workingAll.length - fresh.length;
   const nowQueue = openQueue.slice(0, 3);
 
-  const clip = (text: string, max = 96) => {
-    const clean = text.replace(/\s+/g, " ").trim();
-    return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
+  // ── snapshot rows (async), formatted synchronously by formatConsole ──
+  const ifRows: string[][] = [];
+  for (const w of inFlight) {
+    const ciText =
+      w.ci_state === "green" ? "pass" : w.ci_state === "red" ? "FAIL" : w.ci_state === "running" ? "run" : "-";
+    const live = liveAgentStatus.get(w.worker_id);
+    const sess = live?.status ?? w.session_status;
+    const sessAt = live?.activityAt ?? w.last_activity_at;
+    const updatedMs = Date.now() - new Date(w.updated_at ?? 0).getTime();
+    const narrating = !Number.isNaN(updatedMs) && updatedMs < 3 * 60_000;
+    const now = narrating
+      ? w.summary || w.objective
+      : (await getWorkerLiveLine(w.worker_id)) || w.summary || w.objective;
+    const meta =
+      `${w.action ? `[${w.action}] ` : ""}${sess ? `${sess}(${timeAgo(sessAt)}) ` : ""}` +
+      `${w.unresolved_thread_count ? `\u{1F4AC}${w.unresolved_thread_count} ` : ""}\u00b7 ${now}`;
+    ifRows.push([
+      w.worker_id,
+      w.linear_issue_id ?? "-",
+      w.evidence?.pr ? normalizePrRef(w.evidence.pr) : "-",
+      ciText,
+      meta,
+    ]);
+  }
+  const snap: ConsoleSnap = {
+    updated: new Date().toLocaleTimeString(),
+    counts: { needsYou: needsYou.length, queue: openQueue.length, inFlight: inFlight.length },
+    nyRows: needsYou.map((it) => [it.priority, it.worker, it.ticket, it.message]),
+    ifRows,
+    nowRows: nowQueue.map((i) => [`P${i.priority}`, i.title]),
+    moreInFlight,
+    dormant: dormantCount,
   };
-
-  const lines: string[] = [];
-  lines.push("⚡ Command Centre — console");
-  lines.push(
-    clip(
-      `Updated ${new Date().toLocaleTimeString()} • Needs You ${needsYou.length} • Queue ${openQueue.length} • In Flight ${inFlight.length}`,
-    ),
-  );
-  lines.push("");
-  lines.push("Needs You");
-  if (!needsYou.length) {
-    lines.push("  ✓ none");
-  } else {
-    lines.push(
-      tableLine([
-        { value: "P", width: 3 },
-        { value: "WORKER", width: 14 },
-        { value: "TICKET", width: 11 },
-        { value: "WHAT YOU NEED TO DO", width: 62 },
-      ]),
-    );
-    const contIndent = " ".repeat(3 + 1 + 14 + 1 + 11 + 1);
-    let anyTruncated = false;
-    for (const item of needsYou) {
-      const wrapped = wrapText(item.message, 62, 3);
-      anyTruncated ||= wrapped[wrapped.length - 1]?.endsWith("…") ?? false;
-      lines.push(
-        tableLine([
-          { value: item.priority, width: 3 },
-          { value: item.worker, width: 14 },
-          {
-            value: item.ticket,
-            width: 11,
-            url:
-              item.ticket !== "-"
-                ? `https://linear.app/${LINEAR_WORKSPACE}/issue/${item.ticket}`
-                : undefined,
-          },
-          { value: wrapped[0] ?? "", width: 62 },
-        ]),
-      );
-      for (const cont of wrapped.slice(1)) lines.push(contIndent + cont);
-    }
-    if (anyTruncated) lines.push("  … clipped — /cc needs for full text");
-  }
-
-  lines.push("In Flight");
-  if (!inFlight.length) {
-    lines.push("  ✓ none");
-  } else {
-    lines.push(
-      tableLine([
-        { value: "", width: 2 },
-        { value: "WORKER", width: 14 },
-        { value: "TICKET", width: 11 },
-        { value: "PR", width: 5 },
-        { value: "VERDICT", width: 14 },
-        { value: "CI", width: 4 },
-        { value: "💬", width: 2 },
-        { value: "AGENT", width: 19 },
-        { value: "UPD", width: 4 },
-      ]),
-    );
-    for (const worker of inFlight) {
-      const ciText =
-        worker.ci_state === "green"
-          ? "pass"
-          : worker.ci_state === "red"
-            ? "FAIL"
-            : worker.ci_state === "running"
-              ? "run"
-              : "-";
-      const liveSess = liveAgentStatus.get(worker.worker_id);
-      const sessStatus = liveSess?.status ?? worker.session_status;
-      const sessAt = liveSess?.activityAt ?? worker.last_activity_at;
-      const agentText = sessStatus ? `${sessStatus}(${timeAgo(sessAt)})` : "-";
-      const prRef = worker.evidence?.pr ? normalizePrRef(worker.evidence.pr) : "-";
-      const prUrl =
-        worker.evidence?.pr && /^https?:\/\//.test(worker.evidence.pr)
-          ? worker.evidence.pr
-          : undefined;
-      const ticketUrl = worker.linear_issue_id
-        ? `https://linear.app/${LINEAR_WORKSPACE}/issue/${worker.linear_issue_id}`
-        : undefined;
-      lines.push(
-        tableLine([
-          { value: statusBadge(worker.status), width: 2 },
-          { value: worker.worker_id, width: 14 },
-          { value: worker.linear_issue_id ?? "-", width: 11, url: ticketUrl },
-          { value: prRef, width: 5, url: prUrl },
-          { value: worker.action ?? "-", width: 14 },
-          { value: ciText, width: 4 },
-          { value: String(worker.unresolved_thread_count ?? 0), width: 2 },
-          { value: agentText, width: 19 },
-          { value: timeAgo(worker.updated_at), width: 4 },
-        ]),
-      );
-      // Fresh checkpoint summary (worker narrating) beats raw scrollback; stale summary falls back to zmx.
-      const updatedMs = Date.now() - new Date(worker.updated_at ?? 0).getTime();
-      const narrating = !Number.isNaN(updatedMs) && updatedMs < 3 * 60_000;
-      const live = narrating ? null : await getWorkerLiveLine(worker.worker_id);
-      lines.push(
-        clip(live ? `   ⏵ ${live}` : `   ↳ ${worker.summary || worker.objective}`, 92),
-      );
-    }
-  }
-  if (moreInFlight > 0) {
-    lines.push(`  … +${moreInFlight} more in flight — /cc-workers`);
-  }
-  if (dormantCount > 0) {
-    lines.push(`  💤 ${dormantCount} dormant worker(s) — /cc-workers`);
-  }
-
-  if (nowQueue.length) {
-    lines.push("");
-    lines.push("Now");
-    for (const item of nowQueue) {
-      lines.push(`  P${item.priority} ${clip(item.title, 92)}`);
-    }
-  }
-
-  return lines;
+  consoleSnapCache.set(cwd, snap);
+  return formatConsole(snap, width);
 }
+
+interface ConsoleSnap {
+  updated: string;
+  counts: { needsYou: number; queue: number; inFlight: number };
+  nyRows: string[][];
+  ifRows: string[][];
+  nowRows: string[][];
+  moreInFlight: number;
+  dormant: number;
+}
+const consoleSnapCache = new Map<string, ConsoleSnap>();
+
+/** Sync formatter: renders a snapshot into box tables sized to `width`. */
+function formatConsole(s: ConsoleSnap, width: number): string[] {
+  const out: string[] = [];
+  out.push(
+    `Updated ${s.updated} \u00b7 Needs You ${s.counts.needsYou} \u00b7 Queue ${s.counts.queue} \u00b7 In Flight ${s.counts.inFlight}`,
+  );
+  out.push("");
+  out.push("NEEDS YOU");
+  if (!s.nyRows.length) out.push("  \u2713 none");
+  else
+    out.push(
+      ...renderBoxTable(
+        width,
+        [
+          { title: "P", min: 2 },
+          { title: "WORKER", min: 13 },
+          { title: "TICKET", min: 11 },
+          { title: "WHAT YOU NEED TO DO", min: 20, flex: 1 },
+        ],
+        s.nyRows,
+      ),
+    );
+  out.push("");
+  out.push("IN FLIGHT");
+  if (!s.ifRows.length) out.push("  \u2713 none");
+  else
+    out.push(
+      ...renderBoxTable(
+        width,
+        [
+          { title: "WORKER", min: 13 },
+          { title: "TICKET", min: 11 },
+          { title: "PR", min: 5 },
+          { title: "CI", min: 4 },
+          { title: "STATUS / NOW", min: 20, flex: 1 },
+        ],
+        s.ifRows,
+      ),
+    );
+  if (s.moreInFlight > 0) out.push(`  \u2026 +${s.moreInFlight} more in flight`);
+  if (s.dormant > 0) out.push(`  \u{1F4A4} ${s.dormant} dormant`);
+  if (s.nowRows.length) {
+    out.push("");
+    out.push("QUEUE");
+    out.push(
+      ...renderBoxTable(
+        width,
+        [
+          { title: "P", min: 2 },
+          { title: "ITEM", min: 20, flex: 1 },
+        ],
+        s.nowRows,
+      ),
+    );
+  }
+  return out;
+}
+
 
 /** Beacon: a fixed ≤3-line status light for the always-on widget — never truncates. */
 async function buildBeaconLines(cwd: string): Promise<string[]> {
@@ -1291,8 +1336,23 @@ async function renderDashboardWidget(ctx: ExtensionCommandContext) {
 }
 
 async function openConsole(ctx: ExtensionCommandContext) {
-  const lines = await buildConsoleLines(ctx.cwd);
-  await showPager(ctx, "Command Centre", lines.join("\n"));
+  await buildConsoleLines(ctx.cwd, 100); // populates consoleSnapCache
+  const snap = consoleSnapCache.get(ctx.cwd);
+  if (!snap) return;
+  if (ctx.mode !== "tui") {
+    showOutputPanel(ctx, formatConsole(snap, 100).join("\n"));
+    return;
+  }
+  await ctx.ui.custom<null>(
+    (tui, _theme, _keybindings, done) =>
+      new OverlayPane(
+        "Command Centre",
+        new StaticContent((w) => formatConsole(snap, w)),
+        tui,
+        done,
+      ),
+    { overlay: true },
+  );
 }
 
 function showOutputPanel(ctx: ExtensionCommandContext, content: string) {
@@ -1303,50 +1363,44 @@ function showOutputPanel(ctx: ExtensionCommandContext, content: string) {
 }
 
 /** Scrollable overlay pager for long content — widgets are height-capped by pi. */
-class PagerView {
-  private offset = 0;
-  private readonly pageSize = 20;
+/** Content component that renders from a live builder (console tables at real width). */
+class StaticContent implements Component {
+  private build: (width: number) => string[];
+  constructor(build: (width: number) => string[]) {
+    this.build = build;
+  }
+  render(width: number): string[] {
+    return this.build(Math.max(20, width));
+  }
+  invalidate(): void {}
+}
+
+/** Bordered overlay pane backed by pi-tui ScrollView (scrollbar + mouse-wheel). */
+class OverlayPane implements Component {
   private title: string;
-  private raw: string[];
-  private tui: { requestRender?: () => void };
+  private sv: ScrollView;
+  private tui: { requestRender?: () => void; height?: number; rows?: number };
   private done: (v: null) => void;
   constructor(
     title: string,
-    content: string[],
-    tui: { requestRender?: () => void },
+    content: Component,
+    tui: { requestRender?: () => void; height?: number; rows?: number },
     done: (v: null) => void,
   ) {
     this.title = title;
-    this.raw = content;
     this.tui = tui;
     this.done = done;
-  }
-  /** Wrap every logical line to the pane width — nothing is ever clipped. */
-  private wrapped(inner: number): string[] {
-    const out: string[] = [];
-    for (const line of this.raw) {
-      if (line.length <= inner) {
-        out.push(line);
-        continue;
-      }
-      for (let i = 0; i < line.length; i += inner) out.push(line.slice(i, i + inner));
-    }
-    return out;
+    this.sv = new ScrollView(content, { follow: "none", scrollbar: "auto" });
   }
   render(width: number): string[] {
-    const inner = Math.max(20, Math.min(width - 4, 110));
-    const lines = this.wrapped(inner);
-    const total = lines.length;
-    const maxOffset = Math.max(0, total - this.pageSize);
-    if (this.offset > maxOffset) this.offset = maxOffset;
-    if (this.offset < 0) this.offset = 0;
-    const end = Math.min(this.offset + this.pageSize, total);
-    const pad = (s: string) => `│ ${s}${" ".repeat(Math.max(0, inner - s.length))} │`;
-    const head = ` ${this.title} · ${total ? this.offset + 1 : 0}-${end}/${total} · ↑↓ PgUp/PgDn · q closes `;
-    const top = `┌${head.slice(0, inner + 2).padEnd(inner + 2, "─")}┐`;
-    const bottom = `└${"─".repeat(inner + 2)}┘`;
-    const body = lines.slice(this.offset, end).map(pad);
-    while (body.length < Math.min(this.pageSize, total)) body.push(pad(""));
+    const inner = Math.max(20, width - 2);
+    const head = ` ${this.title} · ↑↓ PgUp/PgDn scroll · q close · alt+a act `;
+    const top = `\u250c${head.slice(0, inner).padEnd(inner, "\u2500")}\u2510`;
+    const body = this.sv.render(inner).map((l) => {
+      const padw = Math.max(0, inner - visibleWidth(l));
+      return `\u2502${l}${" ".repeat(padw)}\u2502`;
+    });
+    const bottom = `\u2514${"\u2500".repeat(inner)}\u2518`;
     return [top, ...body, bottom];
   }
   handleInput(data: string): void {
@@ -1354,13 +1408,11 @@ class PagerView {
       this.done(null);
       return;
     }
-    if (matchesKey(data, "up")) this.offset -= 1;
-    else if (matchesKey(data, "down")) this.offset += 1;
-    else if (matchesKey(data, "pageup")) this.offset -= this.pageSize;
-    else if (matchesKey(data, "pagedown") || data === " ") this.offset += this.pageSize;
-    else if (data === "g") this.offset = 0;
-    else if (data === "G") this.offset = Number.MAX_SAFE_INTEGER;
+    this.sv.handleInput?.(data);
     this.tui.requestRender?.();
+  }
+  handleMouse(ev: unknown): unknown {
+    return (this.sv as unknown as { handleMouse?: (e: unknown) => unknown }).handleMouse?.(ev);
   }
   invalidate(): void {}
 }
@@ -1371,9 +1423,64 @@ async function showPager(ctx: ExtensionCommandContext, title: string, content: s
     return;
   }
   await ctx.ui.custom<null>(
-    (tui, _theme, _keybindings, done) => new PagerView(title, content.split("\n"), tui, done),
+    (tui, _theme, _keybindings, done) =>
+      new OverlayPane(title, new Text(content), tui, done),
     { overlay: true },
   );
+}
+
+/**
+ * Box-drawing table with per-cell word wrap and flex columns that expand to
+ * fill the terminal width. Every returned line is exactly `totalWidth` wide.
+ */
+function renderBoxTable(
+  totalWidth: number,
+  columns: Array<{ title: string; min: number; flex?: number }>,
+  rows: string[][],
+): string[] {
+  const n = columns.length;
+  const overhead = 3 * n + 1; // │ + " x " padding per column + trailing │
+  const avail = Math.max(n * 3, totalWidth - overhead);
+  const widths = columns.map((c) => c.min);
+  const flexIdx = columns.map((c, i) => (c.flex ? i : -1)).filter((i) => i >= 0);
+  let remaining = avail - widths.reduce((a, b) => a + b, 0);
+  if (remaining > 0 && flexIdx.length) {
+    const totalFlex = flexIdx.reduce((s, i) => s + (columns[i]!.flex ?? 1), 0);
+    for (const i of flexIdx) widths[i]! += Math.floor((remaining * (columns[i]!.flex ?? 1)) / totalFlex);
+  }
+  // Shrink widest columns if we overflow a narrow terminal.
+  let over = widths.reduce((a, b) => a + b, 0) - avail;
+  while (over > 0) {
+    let widest = 0;
+    for (let i = 1; i < n; i++) if (widths[i]! > widths[widest]!) widest = i;
+    if (widths[widest]! <= 6) break;
+    widths[widest]! -= 1;
+    over -= 1;
+  }
+  const bar = (l: string, m: string, r: string) =>
+    l + widths.map((w) => "\u2500".repeat(w + 2)).join(m) + r;
+  const rowLines = (cells: string[]): string[] => {
+    const wrapped = widths.map((w, i) => {
+      const t = (cells[i] ?? "").replace(/\s+/g, " ").trim();
+      return t ? wrapText(t, w, 12) : [""];
+    });
+    const height = Math.max(...wrapped.map((c) => c.length), 1);
+    const out: string[] = [];
+    for (let li = 0; li < height; li++) {
+      const parts = widths.map((w, ci) => {
+        const line = wrapped[ci]![li] ?? "";
+        return ` ${line}${" ".repeat(Math.max(0, w - visibleWidth(line)))} `;
+      });
+      out.push(`\u2502${parts.join("\u2502")}\u2502`);
+    }
+    return out;
+  };
+  const lines: string[] = [bar("\u250c", "\u252c", "\u2510")];
+  lines.push(...rowLines(columns.map((c) => c.title)));
+  lines.push(bar("\u251c", "\u253c", "\u2524"));
+  for (const r of rows) lines.push(...rowLines(r));
+  lines.push(bar("\u2514", "\u2534", "\u2518"));
+  return lines;
 }
 
 export default function commandCentreExtension(pi: ExtensionAPI) {
@@ -1407,6 +1514,12 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
     description: "Command Centre: inspect a worker's full status",
     handler: async (ctx) => {
       await inspectHotkey(ctx as ExtensionCommandContext);
+    },
+  });
+  pi.registerShortcut("alt+a", {
+    description: "Command Centre: action mode — pick worker → reply/inspect/kill",
+    handler: async (ctx) => {
+      await actHotkey(ctx as ExtensionCommandContext);
     },
   });
 
