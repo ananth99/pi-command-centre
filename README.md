@@ -23,16 +23,15 @@ A [pi](https://github.com/earendil-works/pi-coding-agent) extension that turns y
 | `alt+r` | **Reply** to an agent awaiting your input (pick worker → type → posts @mention + flushes queue) |
 | `alt+i` | **Inspect** a worker's full checkpoint in a scrollable pager |
 | `alt+k` | **Close/kill** a worker |
+| `alt+l` | **Launch** supervisor workers (interactive: tickets → repo → agent) |
+| `alt+p` | Toggle the beacon panel on/off |
 
 Console navigation: `↑↓` / `PgUp` `PgDn` / `g` `G` scroll, `q` or `esc` close. Ticket & PR cells are `cmd`-clickable (OSC 8 links).
 
-Slash commands still exist as a fallback (`/cc`, `/cc reply`, `/cc launch`, `/cc inspect`, `/cc needs`, `/cc approve`, `/cc reject`) but hotkeys are the intended interface.
 
 ## Launching workers
 
-```
-/cc launch --tickets SCAAS-11150,SCAAS-11148 --repo ~/code/my-service --agent ralph
-```
+Press `alt+l` and follow the prompts (tickets → repo → agent). One supervisor worker per ticket.
 
 One supervisor worker per ticket. The first wake-up delegates to the agent (with your branch/PR conventions), then subsequent wake-ups drive it to a mergeable, signed, single-commit PR — escalating to **Needs You** only for merge approval, scope questions, or genuine blockers.
 

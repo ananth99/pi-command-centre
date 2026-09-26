@@ -19,7 +19,7 @@ const execFileAsync = promisify(execFile);
 /** Linear workspace slug for ticket deep-links. Override with CC_LINEAR_WORKSPACE. */
 const LINEAR_WORKSPACE = process.env.CC_LINEAR_WORKSPACE ?? "bitgo";
 
-type WorkerStatus = "working" | "blocked" | "awaiting_approval" | "done" | "failed";
+type WorkerStatus = "working" | "landing" | "blocked" | "awaiting_approval" | "done" | "failed";
 type Confidence = "low" | "medium" | "high";
 type Risk = "low" | "medium" | "high";
 type QueuePriority = 1 | 2 | 3 | 4;
@@ -287,6 +287,20 @@ async function readWorkerCheckpoints(cwd: string): Promise<WorkerCheckpoint[]> {
     const checkpointPath = join(paths.workersDir, file);
     const checkpoint = await readJson<WorkerCheckpoint | null>(checkpointPath, null);
     if (!checkpoint) continue;
+
+    // Status sanitization: the check-worker LLM occasionally invents statuses
+    // (e.g. "landing"), which every loop silently ignores — a permanent,
+    // unlogged dormancy. Clamp unknowns to "working" (the safe default: it
+    // resumes scans and wake-ups) and stamp the file so the fix persists.
+    const validStatuses = new Set(["working", "blocked", "awaiting_approval", "done", "failed"]);
+    if (!validStatuses.has(checkpoint.status)) {
+      const badStatus = checkpoint.status;
+      checkpoint.status = "working";
+      checkpoint.summary = `[status sanitized: '${badStatus}' is not a valid status → working] ${checkpoint.summary ?? ""}`.slice(0, 200);
+      checkpoint.updated_at = checkpoint.updated_at ?? new Date().toISOString();
+      void writeJson(checkpointPath, checkpoint).catch(() => {});
+      void appendEvent(cwd, { type: "worker_status_sanitized", worker_id: checkpoint.worker_id, from: badStatus, to: "working" }).catch(() => {});
+    }
 
     if (checkpoint.status === "done" && checkpoint.expected_pr) {
       const actualPr = checkpoint.evidence?.pr?.trim();
@@ -818,6 +832,8 @@ function statusBadge(status: WorkerStatus) {
       return "🟥";
     case "awaiting_approval":
       return "🟨";
+    case "landing":
+      return "🛬";
     case "done":
       return "🟩";
     case "failed":
@@ -882,35 +898,67 @@ async function autoCloseMergedWorkers(cwd: string): Promise<void> {
   const paths = await ensureState(cwd);
   for (const w of checkpoints) {
     if (w.status === "done" || w.status === "failed") continue;
-    const pr = w.expected_pr || w.evidence?.pr;
-    const prNum = pr?.match(/(\d+)/)?.[1];
-    if (!prNum) continue;
+    // Multi-PR tickets: retire only when EVERY PR in the scan set is merged or
+    // closed (a closed-without-merge PR like a deferred slice is terminal too).
+    // Closing on the anchor alone would retire the worker while live stack
+    // siblings still need supervision.
+    const prUrls = [...new Set([w.expected_pr || w.evidence?.pr, ...(w.scan_prs ?? [])].filter(Boolean))] as string[];
+    type PrRef = { num: string; owner?: string; repo?: string };
+    const prRefs: PrRef[] = [];
+    for (const url of prUrls) {
+      const num = url.match(/(\d+)/)?.[1];
+      if (!num) continue;
+      const m = /github\.com\/([^/]+)\/([^/]+)\/pull\//.exec(url);
+      prRefs.push({ num, ...(m ? { owner: m[1], repo: m[2] } : {}) });
+    }
+    if (!prRefs.length) continue;
     const repo = w.evidence?.repo;
-    // The LLM sometimes rewrites evidence and drops `repo` — fall back to the PR URL's owner/repo.
-    const urlMatch = w.evidence?.pr
-      ? /github\.com\/([^/]+)\/([^/]+)\/pull\//.exec(w.evidence.pr)
-      : null;
-    if (!repo && !urlMatch) continue;
+    if (!repo && prRefs.some((r) => !r.owner)) continue;
     const prev = prMergeChecked.get(w.worker_id);
     if (prev && Date.now() - prev < 60_000) continue;
     prMergeChecked.set(w.worker_id, Date.now());
     try {
-      const ghArgs = ["pr", "view", prNum, "--json", "state,mergedAt"];
-      if (!repo && urlMatch) ghArgs.push("-R", `${urlMatch[1]}/${urlMatch[2]}`);
-      const { stdout } = await execFileAsync("gh", ghArgs, {
-        cwd: repo,
-        timeout: 10_000,
-      });
-      const prState = JSON.parse(stdout) as { state?: string; mergedAt?: string | null };
-      if (prState.state === "MERGED") {
+      const states: Record<string, { state?: string; mergedAt?: string | null }> = {};
+      for (const ref of prRefs) {
+        const ghArgs = ["pr", "view", ref.num, "--json", "state,mergedAt,reviewDecision"];
+        if (!repo && ref.owner) ghArgs.push("-R", `${ref.owner}/${ref.repo}`);
+        const { stdout } = await execFileAsync("gh", ghArgs, {
+          cwd: repo,
+          timeout: 10_000,
+        });
+        states[ref.num] = JSON.parse(stdout) as {
+          state?: string;
+          mergedAt?: string | null;
+          reviewDecision?: string;
+        };
+      }
+      const allTerminal = prRefs.every(
+        (ref) => states[ref.num]?.state === "MERGED" || states[ref.num]?.state === "CLOSED",
+      );
+      const anchor = w.expected_pr || w.evidence?.pr;
+      const anchorNum = anchor?.match(/(\d+)/)?.[1];
+      const anchorState = anchorNum ? states[anchorNum] : undefined;
+      if (allTerminal && anchorState?.state === "MERGED") {
         w.status = "done";
         w.action = "MERGED";
-        w.summary = `PR ${pr} merged ${prState.mergedAt ?? ""} — auto-closed`.trim();
+        w.summary = `All tracked PRs merged/closed; ${anchor} merged ${anchorState.mergedAt ?? ""} — auto-closed`.trim();
         w.updated_at = new Date().toISOString();
         w.check_in_progress_at = null;
         await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
         liveAgentStatus.delete(w.worker_id);
-        await appendEvent(cwd, { type: "worker_auto_closed", worker_id: w.worker_id, pr, reason: "pr_merged" });
+        await appendEvent(cwd, { type: "worker_auto_closed", worker_id: w.worker_id, pr: anchor, reason: "all_prs_terminal" });
+      } else if (
+        w.status === "landing" &&
+        anchorState?.state === "OPEN" &&
+        anchorState?.reviewDecision === "APPROVED"
+      ) {
+        // Review landed while parked → resume wake-ups (worker will surface merge-approval).
+        w.status = "working";
+        w.action = "RESUMED";
+        w.summary = `Review approved on ${anchor} — resuming supervision for merge-approval`;
+        w.updated_at = new Date().toISOString();
+        await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+        await appendEvent(cwd, { type: "worker_reconciled", worker_id: w.worker_id, to: "working", reason: "review_approved" });
       }
     } catch {
       // ignore; retry next window
@@ -1033,7 +1081,7 @@ async function probeAgentSessions(cwd: string): Promise<void> {
   const paths = await ensureState(cwd);
   for (const w of checkpoints) {
     if (!w.linear_issue_id) continue;
-    if (!(w.status === "working" || w.status === "awaiting_approval" || w.status === "blocked")) continue;
+    if (!(w.status === "working" || w.status === "awaiting_approval" || w.status === "blocked" || w.status === "landing")) continue;
     const prev = liveAgentStatus.get(w.worker_id);
     if (prev && Date.now() - prev.checkedAt < 60_000) continue;
     try {
@@ -1063,6 +1111,115 @@ async function probeAgentSessions(cwd: string): Promise<void> {
           w.updated_at = new Date().toISOString();
           await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
           await appendEvent(cwd, { type: "worker_reconciled", worker_id: w.worker_id, to: "working" });
+        }
+        // Landing lane: agent finished + PR open + review still required + commit
+        // gates pass (single, verified) → park it. Stops pointless WAIT wake-ups;
+        // the cheap probe below keeps watching it and unparks on any change.
+        if (w.status === "working" && /complete/i.test(latest.status)) {
+          const pr = w.expected_pr || w.evidence?.pr || "";
+          const prNum = pr.match(/(\d+)/)?.[1];
+          if (prNum && w.evidence?.repo) {
+            try {
+              const { stdout: prOut } = await execFileAsync(
+                "gh",
+                ["pr", "view", prNum, "--json", "state,reviewDecision,mergeStateStatus,commits"],
+                { cwd: w.evidence.repo, timeout: 8000, maxBuffer: 4 * 1024 * 1024 },
+              );
+              const p = JSON.parse(prOut) as {
+                state?: string;
+                reviewDecision?: string;
+                mergeStateStatus?: string;
+                commits?: Array<{ commit?: { verification?: { verified?: boolean | null } } }>;
+              };
+              const commitOk =
+                (p.commits?.length ?? 0) === 1 &&
+                (p.commits ?? []).every((c) => c?.commit?.verification?.verified === true);
+              if (
+                p.state === "OPEN" &&
+                p.reviewDecision === "REVIEW_REQUIRED" &&
+                p.mergeStateStatus !== "DIRTY" &&
+                commitOk
+              ) {
+                w.status = "landing";
+                w.action = "LANDING";
+                w.summary = `Agent finished — PR #${prNum} awaits human review (parked, probe keeps watching)`;
+                w.updated_at = new Date().toISOString();
+                await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+                await appendEvent(cwd, { type: "worker_landing", worker_id: w.worker_id, pr: prNum });
+              }
+            } catch {
+              // keep working
+            }
+          }
+        }
+        // Landing guard: parked workers are still watched here (no LLM) — unpark
+        // the moment anything changes: new review comments, unsigned/multiple
+        // commits, CI dirty, review approved (approved also handled in auto-close).
+        if (w.status === "landing") {
+          const pr = w.expected_pr || w.evidence?.pr || "";
+          const prNum = pr.match(/(\d+)/)?.[1];
+          const repoPath = w.evidence?.repo;
+          if (prNum && repoPath) {
+            const opts = { cwd: repoPath, timeout: 8000, maxBuffer: 4 * 1024 * 1024 };
+            try {
+              const { stdout: prOut } = await execFileAsync(
+                "gh",
+                ["pr", "view", prNum, "--json", "state,reviewDecision,mergeStateStatus,commits"],
+                opts,
+              );
+              const p = JSON.parse(prOut) as {
+                state?: string;
+                reviewDecision?: string;
+                mergeStateStatus?: string;
+                commits?: Array<{ commit?: { verification?: { verified?: boolean | null } } }>;
+              };
+              const commitOk =
+                (p.commits?.length ?? 0) === 1 &&
+                (p.commits ?? []).every((c) => c?.commit?.verification?.verified === true);
+              const ciOk = p.mergeStateStatus !== "DIRTY";
+              const stillParked = p.state === "OPEN" && p.reviewDecision === "REVIEW_REQUIRED" && ciOk && commitOk;
+              if (!stillParked) {
+                w.status = "working";
+                w.action = "UNPARKED";
+                w.summary = !commitOk
+                  ? `Unparked: PR #${prNum} commit not single+verified — wake-up will demand squash+sign`
+                  : !ciOk
+                    ? `Unparked: CI dirty on PR #${prNum} — wake-up will fire FIX_CI`
+                    : `Unparked: PR #${prNum} review state changed — resuming supervision`;
+                w.updated_at = new Date().toISOString();
+                await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+                await appendEvent(cwd, { type: "worker_unparked", worker_id: w.worker_id, pr: prNum });
+              } else {
+                // No PR-state change — check for NEW review comments since we parked.
+                try {
+                  const { stdout: repoOut } = await execFileAsync(
+                    "gh",
+                    ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+                    opts,
+                  );
+                  const fullName = repoOut.trim();
+                  const { stdout: cmOut } = await execFileAsync(
+                    "gh",
+                    ["api", `repos/${fullName}/pulls/${prNum}/comments`, "--paginate", "--jq", "max_by(.created_at).created_at"],
+                    opts,
+                  );
+                  const latest = cmOut.trim().split("\n").filter((l) => l && l !== "null").sort().pop();
+                  if (latest && Date.parse(latest) > Date.parse(w.updated_at)) {
+                    w.status = "working";
+                    w.action = "UNPARKED";
+                    w.summary = `Unparked: new review comments on PR #${prNum} — wake-up will address threads`;
+                    w.updated_at = new Date().toISOString();
+                    await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+                    await appendEvent(cwd, { type: "worker_unparked", worker_id: w.worker_id, pr: prNum, reason: "new_review_comments" });
+                  }
+                } catch {
+                  // comment scan failed; stay parked
+                }
+              }
+            } catch {
+              // keep parked
+            }
+          }
         }
       }
     } catch {
@@ -1160,7 +1317,9 @@ async function buildConsoleLines(cwd: string, width = 100): Promise<string[]> {
       message: item.title,
     }));
 
-  const workingAll = checkpoints.filter((w) => w.status === "working");
+  const workingAll = checkpoints.filter(
+    (w) => w.status === "working" || w.status === "landing",
+  );
   const needsYouFromAgents = workingAll.flatMap((w) => {
     const s = liveAgentStatus.get(w.worker_id);
     // Grace window: you just replied — don't re-raise the P1 while the agent
@@ -1311,8 +1470,9 @@ async function buildBeaconLines(cwd: string): Promise<string[]> {
   });
   const needsYou = awaiting.length + blockers.length + openQueue.filter((i) => i.priority <= 2).length;
   const hot = needsYou > 0 ? " 🔴" : "";
+  const landing = checkpoints.filter((w) => w.status === "landing");
   const beacon: string[] = [
-    `⚡ CC${hot} · needs-you ${needsYou} · in-flight ${working.length} · queue ${openQueue.length} · alt+c console`,
+    `⚡ CC${hot} · needs-you ${needsYou} · in-flight ${working.length} · landing ${landing.length} · queue ${openQueue.length} · alt+c console`,
   ];
   const top = awaiting[0] ?? blockers[0];
   if (top) {
@@ -1522,6 +1682,24 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
       await actHotkey(ctx as ExtensionCommandContext);
     },
   });
+  pi.registerShortcut("alt+l", {
+    description: "Command Centre: launch supervisor workers (interactive)",
+    handler: async (ctx) => {
+      await launchHotkey(ctx as ExtensionCommandContext);
+    },
+  });
+  pi.registerShortcut("alt+p", {
+    description: "Command Centre: toggle beacon panel",
+    handler: async (ctx) => {
+      const key = (ctx as ExtensionCommandContext).sessionManager.getSessionId();
+      if (dashboardHiddenSessions.has(key)) {
+        dashboardHiddenSessions.delete(key);
+      } else {
+        dashboardHiddenSessions.add(key);
+      }
+      await renderDashboardWidget(ctx as ExtensionCommandContext);
+    },
+  });
 
   pi.on("input", async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
@@ -1614,208 +1792,6 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
     ctx.ui.setWidget("command-centre-output", undefined, { placement: "belowEditor" });
   });
 
-  pi.registerCommand("cc", {
-    description: "Command Centre router. Example: /cc now, /cc launch ...",
-    handler: async (args, ctx) => {
-      const [subcommand, ...rest] = (args ?? "").trim().split(/\s+/).filter(Boolean);
-      const sessionId = ctx.sessionManager.getSessionId();
-
-      if (!subcommand || subcommand === "now" || subcommand === "console") {
-        await openConsole(ctx);
-        return;
-      }
-      if (subcommand === "help") {
-        showOutputPanel(ctx, [
-          "# /cc — on | off | panel | takeover | clear | now | workers | inspect <id>",
-          "- /cc launch --tickets SCAAS-11150,SCAAS-11148 [--repo <path>] [--agent ralph] [--base-pr #875]",
-          "- /cc launch <worker_id> [--repo <path>] [--model p/m] [--thinking lvl] <objective>",
-          "- /cc add-action <1-4> <title> · /cc approve <id> · /cc reject <id> [reason]",
-          "- /cc reply <worker_id> <message> (answer an agent awaiting your input — posts @mention on its ticket)",
-          "- /cc needs (all pending decisions, full text, in a scrollable pager)",
-          "Plain English works after /cc on. This panel clears on your next prompt (or /cc clear).",
-        ].join("\n"));
-        return;
-      }
-
-      if (subcommand === "takeover") {
-        await setActiveController(ctx.cwd, sessionId);
-        blockedControllerSessions.delete(sessionId);
-        commandCentreModeSessions.add(sessionId);
-        dashboardHiddenSessions.delete(sessionId);
-        ctx.ui.notify("Command Centre control claimed by this session", "info");
-        await renderDashboardWidget(ctx);
-        return;
-      }
-
-      if (subcommand === "clear") {
-        ctx.ui.setWidget("command-centre-output", undefined, { placement: "belowEditor" });
-        ctx.ui.notify("Output panel cleared", "info");
-        return;
-      }
-
-      if (blockedControllerSessions.has(sessionId)) {
-        ctx.ui.notify("This session is not the active Command Centre controller. Use /cc takeover.", "warn");
-        return;
-      }
-
-      if (subcommand === "on") {
-        const key = sessionId;
-        commandCentreModeSessions.add(key);
-        dashboardHiddenSessions.delete(key);
-        ctx.ui.notify("Command Centre mode enabled (panel on)", "info");
-        await renderDashboardWidget(ctx);
-        return;
-      }
-
-      if (subcommand === "off") {
-        commandCentreModeSessions.delete(sessionId);
-        ctx.ui.notify("Command Centre mode disabled", "info");
-        return;
-      }
-
-      if (subcommand === "panel") {
-        const action = (rest[0] ?? "toggle").toLowerCase();
-        const key = ctx.sessionManager.getSessionId();
-        if (action === "off") {
-          dashboardHiddenSessions.add(key);
-          ctx.ui.setWidget("command-centre-dashboard", undefined);
-          ctx.ui.notify("Command Centre dashboard hidden", "info");
-          return;
-        }
-        if (action === "on") {
-          dashboardHiddenSessions.delete(key);
-          await renderDashboardWidget(ctx);
-          ctx.ui.notify("Command Centre dashboard shown", "info");
-          return;
-        }
-        if (dashboardHiddenSessions.has(key)) {
-          dashboardHiddenSessions.delete(key);
-          await renderDashboardWidget(ctx);
-          ctx.ui.notify("Command Centre dashboard shown", "info");
-        } else {
-          dashboardHiddenSessions.add(key);
-          ctx.ui.setWidget("command-centre-dashboard", undefined);
-          ctx.ui.notify("Command Centre dashboard hidden", "info");
-        }
-        return;
-      }
-
-      const commandMap: Record<string, string> = {
-        needs: "cc-needs",
-        reply: "cc-reply",
-        now: "cc-now",
-        workers: "cc-workers",
-        inspect: "cc-inspect",
-        launch: "cc-launch",
-        "add-action": "cc-add-action",
-        approve: "cc-approve",
-        reject: "cc-reject",
-      };
-
-      const mapped = commandMap[subcommand];
-      if (!mapped) {
-        ctx.ui.notify(`Unknown subcommand: ${subcommand}. Use /cc help`, "warn");
-        return;
-      }
-
-      const payload = ["/" + mapped, ...rest].join(" ").trim();
-      pi.sendUserMessage(payload);
-    },
-  });
-
-  pi.registerCommand("cc-now", {
-    description: "Open the Command Centre console (scrollable, no truncation)",
-    handler: async (_args, ctx) => {
-      await openConsole(ctx);
-    },
-  });
-
-  pi.registerCommand("cc-workers", {
-    description: "List worker checkpoints",
-    handler: async (_args, ctx) => {
-      const workers = await readWorkerCheckpoints(ctx.cwd);
-      if (!workers.length) {
-        ctx.ui.notify("No workers found.", "info");
-        return;
-      }
-
-      const rows = [
-        tableLine([
-          { value: "", width: 2 },
-          { value: "WORKER", width: 16 },
-          { value: "STATUS", width: 18 },
-          { value: "VERDICT", width: 14 },
-          { value: "TICKET", width: 12 },
-          { value: "UPD", width: 5 },
-          { value: "SUMMARY", width: 70 },
-        ]),
-        ...workers.map((w) =>
-          tableLine([
-            { value: statusBadge(w.status), width: 2 },
-            { value: w.worker_id, width: 16 },
-            { value: w.status, width: 18 },
-            { value: w.action ?? "-", width: 14 },
-            { value: w.linear_issue_id ?? "-", width: 12 },
-            { value: timeAgo(w.updated_at), width: 5 },
-            { value: w.summary || w.objective, width: 70 },
-          ]),
-        ),
-      ];
-      await showPager(ctx, "Workers", rows.join("\n"));
-    },
-  });
-
-  pi.registerCommand("cc-inspect", {
-    description: "Inspect a worker checkpoint: /cc-inspect <worker_id>",
-    handler: async (args, ctx) => {
-      const workerId = (args ?? "").trim();
-      if (!workerId) {
-        ctx.ui.notify("Usage: /cc-inspect <worker_id>", "warn");
-        return;
-      }
-
-      const paths = await ensureState(ctx.cwd);
-      const workerPath = join(paths.workersDir, `${workerId}.json`);
-      const checkpoint = await readJson<WorkerCheckpoint | null>(workerPath, null);
-      if (!checkpoint) {
-        ctx.ui.notify(`Worker not found: ${workerId}`, "warn");
-        return;
-      }
-
-      await showPager(ctx, `Checkpoint — ${workerId}`, JSON.stringify(checkpoint, null, 2));
-    },
-  });
-
-  pi.registerCommand("cc-needs", {
-    description: "Show every pending decision with full text",
-    handler: async (_args, ctx) => {
-      const workers = await readWorkerCheckpoints(ctx.cwd);
-      const paths = await ensureState(ctx.cwd);
-      const queue = await readJson<QueueState>(paths.queueFile, { items: [] });
-      const out: string[] = [];
-      for (const w of workers.filter(
-        (w) => w.status === "blocked" || w.status === "awaiting_approval",
-      )) {
-        out.push(`■ ${w.worker_id} (${w.status}) — ${w.linear_issue_id ?? "no ticket"}`);
-        if (w.blocker) out.push(`  blocker:  ${w.blocker}`);
-        if (w.proposed_action) out.push(`  proposed: ${w.proposed_action}`);
-        out.push(`  answer:   /cc reply ${w.worker_id} <your answer>`);
-        out.push("");
-      }
-      for (const q of queue.items.filter((i) => i.status === "open")) {
-        out.push(`■ ${q.id} P${q.priority} — ${q.title}`);
-        if (q.details) out.push(`  ${q.details}`);
-        out.push(`  decide:   /cc approve ${q.id}  ·  /cc reject ${q.id} [reason]`);
-        out.push("");
-      }
-      if (!out.length) {
-        ctx.ui.notify("Nothing needs you 🎉", "info");
-        return;
-      }
-      await showPager(ctx, "Needs You — full detail", out.join("\n"));
-    },
-  });
-
 async function doReply(
   ctx: ExtensionCommandContext,
   workerId: string,
@@ -1854,6 +1830,37 @@ async function doReply(
 }
 
 /** Interactive reply flow for the alt+r hotkey: pick a waiting worker, type an answer. */
+/** alt+l: interactive worker launch — prompts for tickets/repo/agent (replaces /cc launch). */
+async function launchHotkey(ctx: ExtensionCommandContext): Promise<void> {
+  const ticketsRaw = await ctx.ui.input(
+    "Launch workers",
+    "Linear tickets, comma-separated (e.g. SCAAS-11150,SCAAS-11148):",
+  );
+  if (!ticketsRaw || !ticketsRaw.trim()) return;
+  const tickets = ticketsRaw
+    .split(",")
+    .map((s: string) => s.trim())
+    .filter(Boolean);
+  if (!tickets.length) return;
+  const repo = (await ctx.ui.input("Repo path", "Repo (blank = current dir):")) ?? "";
+  const agent = (await ctx.ui.input("Agent", "Agent name (blank = ralph):")) ?? "";
+  await launchTicketWorkers(
+    {
+      workerId: "",
+      objective: "",
+      model: "",
+      thinking: "",
+      repo,
+      expectedPr: "",
+      allowInlineComments: false,
+      tickets,
+      agent,
+      basePr: "",
+    } as ReturnType<typeof parseLaunchArgs>,
+    ctx,
+  );
+}
+
 async function replyHotkey(ctx: ExtensionCommandContext): Promise<void> {
   const checkpoints = await readWorkerCheckpoints(ctx.cwd);
   const candidates = checkpoints.filter((w) => {
@@ -1883,236 +1890,4 @@ async function replyHotkey(ctx: ExtensionCommandContext): Promise<void> {
   if (!message) return;
   await doReply(ctx, target.worker_id, message);
 }
-
-  pi.registerCommand("cc-reply", {
-    description: "Answer an agent awaiting your input: /cc-reply <worker_id> <message>",
-    handler: async (args, ctx) => {
-      const parts = (args ?? "").trim().split(/\s+/);
-      const workerId = parts[0] ?? "";
-      const message = parts.slice(1).join(" ");
-      if (!workerId || !message) {
-        ctx.ui.notify("Usage: /cc-reply <worker_id> <message>", "warn");
-        return;
-      }
-      await doReply(ctx, workerId, message);
-    },
-  });
-
-  pi.registerCommand("cc-launch", {
-    description:
-      "Launch a background worker: /cc-launch <worker_id> [--repo <path>] [--pr <url|#num>] [--model <provider/model>] [--thinking <level>] [--allow-inline-comments] <objective>",
-    handler: async (args, ctx) => {
-      const parsed = parseLaunchArgs(args);
-      if (parsed.tickets.length > 0) {
-        await launchTicketWorkers(parsed, ctx);
-        return;
-      }
-      const workerId = parsed.workerId || (await ctx.ui.input("Worker ID", "Enter worker ID:")) || "";
-      const objective =
-        parsed.objective ||
-        (await ctx.ui.input("Objective", "Enter the worker objective:")) ||
-        "";
-      const repoInput =
-        parsed.repo ||
-        (await ctx.ui.input(
-          "Repo path",
-          "Repo path (relative to current dir or absolute). Leave blank for current dir:",
-        )) ||
-        "";
-      const ccConfig = await readCCConfig(ctx.cwd);
-      const model =
-        parsed.model ||
-        (await ctx.ui.input("Model", `Model (blank = ${ccConfig.models.check.model}):`)) ||
-        ccConfig.models.check.model;
-      const thinking =
-        parsed.thinking ||
-        (await ctx.ui.input("Thinking", `Thinking level (blank = ${ccConfig.models.check.thinking}):`)) ||
-        ccConfig.models.check.thinking;
-      const allowInlineComments = parsed.allowInlineComments;
-      const expectedPr = parsed.expectedPr || "";
-
-      if (!workerId || !objective) {
-        ctx.ui.notify("worker_id and objective are required.", "warn");
-        return;
-      }
-
-      const launchCwd = repoInput
-        ? repoInput.startsWith("/")
-          ? resolve(repoInput)
-          : resolve(ctx.cwd, repoInput)
-        : ctx.cwd;
-
-      if (!existsSync(launchCwd)) {
-        ctx.ui.notify(`Repo path does not exist: ${launchCwd}`, "warn");
-        return;
-      }
-
-      const paths = await ensureState(ctx.cwd);
-      const checkpointPath = join(paths.workersDir, `${workerId}.json`);
-
-      const initialCheckpoint: WorkerCheckpoint = {
-        worker_id: workerId,
-        status: "working",
-        objective,
-        expected_pr: expectedPr || undefined,
-        summary: "Worker launched",
-        permissions: { allow_github_inline_comments: allowInlineComments },
-        evidence: { repo: launchCwd, dashboard_links: [] },
-        confidence: "medium",
-        risk: "low",
-        updated_at: new Date().toISOString(),
-        model: model || undefined,
-        thinking,
-      };
-
-      await writeJson(checkpointPath, initialCheckpoint);
-
-      const prompt = buildWorkerPrompt({
-        workerId,
-        objective,
-        checkpointPath,
-        repoPath: launchCwd,
-        expectedPr: expectedPr || undefined,
-        allowInlineComments,
-      });
-
-      try {
-        await spawnWorkerPi({
-          workerId,
-          cwd: launchCwd,
-          stateCwd: ctx.cwd,
-          model,
-          thinking,
-          prompt,
-        });
-        await appendEvent(ctx.cwd, {
-          type: "worker_launched",
-          worker_id: workerId,
-          objective,
-          model: model || null,
-          thinking,
-          repo_path: launchCwd,
-          allow_inline_comments: allowInlineComments,
-          expected_pr: expectedPr || null,
-        });
-        ctx.ui.notify(`Launched worker ${workerId}`, "info");
-        await renderDashboardWidget(ctx);
-      } catch (error) {
-        initialCheckpoint.status = "failed";
-        initialCheckpoint.summary = "Failed to launch worker via zmx";
-        initialCheckpoint.blocker = error instanceof Error ? error.message : String(error);
-        initialCheckpoint.updated_at = new Date().toISOString();
-        await writeJson(checkpointPath, initialCheckpoint);
-        await appendEvent(ctx.cwd, {
-          type: "worker_launch_failed",
-          worker_id: workerId,
-          error: initialCheckpoint.blocker,
-        });
-        ctx.ui.notify(`Failed to launch worker ${workerId}`, "error");
-        await renderDashboardWidget(ctx);
-      }
-    },
-  });
-
-  pi.registerCommand("cc-add-action", {
-    description: "Add a manual intervention queue item: /cc-add-action <priority:1-4> <title>",
-    handler: async (args, ctx) => {
-      const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
-      const priorityRaw = parts[0];
-      const title = parts.slice(1).join(" ");
-      const priority = Number(priorityRaw);
-
-      if (![1, 2, 3, 4].includes(priority) || !title) {
-        ctx.ui.notify("Usage: /cc-add-action <priority:1-4> <title>", "warn");
-        return;
-      }
-
-      const paths = await ensureState(ctx.cwd);
-      const queue = await readJson<QueueState>(paths.queueFile, { items: [] });
-      const id = `action-${Date.now()}`;
-      const now = new Date().toISOString();
-
-      queue.items.push({
-        id,
-        priority: priority as QueuePriority,
-        title,
-        source: "manual",
-        status: "open",
-        created_at: now,
-        updated_at: now,
-      });
-
-      await writeJson(paths.queueFile, queue);
-      await appendEvent(ctx.cwd, {
-        type: "queue_item_added",
-        action_id: id,
-        priority,
-        title,
-      });
-
-      ctx.ui.notify(`Added queue item ${id}`, "info");
-      await renderDashboardWidget(ctx);
-    },
-  });
-
-  pi.registerCommand("cc-approve", {
-    description: "Approve a queue item: /cc-approve <action_id>",
-    handler: async (args, ctx) => {
-      const actionId = (args ?? "").trim();
-      if (!actionId) {
-        ctx.ui.notify("Usage: /cc-approve <action_id>", "warn");
-        return;
-      }
-
-      const paths = await ensureState(ctx.cwd);
-      const queue = await readJson<QueueState>(paths.queueFile, { items: [] });
-      const item = queue.items.find((entry) => entry.id === actionId);
-      if (!item) {
-        ctx.ui.notify(`Action not found: ${actionId}`, "warn");
-        return;
-      }
-
-      item.status = "approved";
-      item.updated_at = new Date().toISOString();
-      await writeJson(paths.queueFile, queue);
-      await appendEvent(ctx.cwd, { type: "queue_approved", action_id: actionId });
-      ctx.ui.notify(`Approved ${actionId}`, "info");
-      await renderDashboardWidget(ctx);
-    },
-  });
-
-  pi.registerCommand("cc-reject", {
-    description: "Reject a queue item: /cc-reject <action_id> [reason]",
-    handler: async (args, ctx) => {
-      const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
-      const actionId = parts[0];
-      const reason = parts.slice(1).join(" ");
-      if (!actionId) {
-        ctx.ui.notify("Usage: /cc-reject <action_id> [reason]", "warn");
-        return;
-      }
-
-      const paths = await ensureState(ctx.cwd);
-      const queue = await readJson<QueueState>(paths.queueFile, { items: [] });
-      const item = queue.items.find((entry) => entry.id === actionId);
-      if (!item) {
-        ctx.ui.notify(`Action not found: ${actionId}`, "warn");
-        return;
-      }
-
-      item.status = "rejected";
-      item.updated_at = new Date().toISOString();
-      if (reason) {
-        item.details = item.details ? `${item.details}\nReject reason: ${reason}` : `Reject reason: ${reason}`;
-      }
-      await writeJson(paths.queueFile, queue);
-      await appendEvent(ctx.cwd, {
-        type: "queue_rejected",
-        action_id: actionId,
-        reason: reason || null,
-      });
-      ctx.ui.notify(`Rejected ${actionId}`, "info");
-      await renderDashboardWidget(ctx);
-    },
-  });
 }
