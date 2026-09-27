@@ -551,24 +551,27 @@ function buildCheckWorkerPrompt(p: {
     "## Step 1 — Gather (Bash: linear + gh CLIs)",
     `1. Sessions: linear api 'query { issue(id:"${p.ticket}") { title state { name } agentSessions { nodes { id status updatedAt } } } }' — pick the latest session for ${p.agentName}.`,
     "2. If a session exists, read its last few activities via linear api agentSession(id, activities) — the last activity timestamp is critical.",
-    "3. If a PR exists: gh pr view <PR> --json state,mergeable,mergeStateStatus,reviewDecision,headRefName,commits ; gh pr checks <PR> ; gh api repos/<owner>/<repo>/pulls/<PR>/comments for review threads — REPEAT for EVERY PR in the scan list above, not just the target. Thread ids already in checkpoint.addressed_threads must NOT be re-raised — EXCEPT when a comment on that thread is NEWER than the agent's last reply on it (a reviewer follow-up): then the thread is NOT addressed — re-raise it, and REMOVE its id from addressed_threads in your checkpoint write. addressed_threads is a latch, follow-ups break the latch.",
+    "3. If a PR exists: gh pr view <PR> --json state,mergeable,mergeStateStatus,reviewDecision,headRefName,commits ; gh pr checks <PR> ; gh api repos/<owner>/<repo>/pulls/<PR>/comments for review threads AND gh api repos/<owner>/<repo>/issues/<PR>/comments for PR conversation comments — a reviewer's "take a look at the ticket" style conversation comment is just as much a thread to address as an inline one — REPEAT for EVERY PR in the scan list above, not just the target. Thread ids already in checkpoint.addressed_threads must NOT be re-raised — EXCEPT when a comment on that thread is NEWER than the agent's last reply on it (a reviewer follow-up): then the thread is NOT addressed — re-raise it, and REMOVE its id from addressed_threads in your checkpoint write. addressed_threads is a latch, follow-ups break the latch.",
     "CRITICAL — human-approval gates are NOT CI failures: checks like 'Validate Humans In The Loop' (from the ci-ai-checks workflow) only clear when human reviewers approve the PR. No agent action can ever fix them. When evaluating CI red, naming failing checks, or setting ci_state/ci_failure_signature, EXCLUDE these approval gates entirely. A PR whose only failing check is a human-approval gate is CI-green for verdict purposes: set ci_state to 'approval_pending' (not 'red'), ci_failure_signature to null, and take WAIT or the DONE-verdict awaiting_approval path — NEVER NUDGE_SPECIFIC, FIX_CI, or any other CI-red verdict for it.",
     `4. Branch check: PR headRefName MUST match ananth/${p.ticket}-<2-3-word-desc> (e.g. ananth/SCAAS-11150-order-read).`,
-    "5. Commits: exactly ONE per branch; every commit must have verification.verified == true.",
+    "5. Commits: exactly ONE per branch; every commit must have verification.verified == true AND a `Co-authored-by: <ticket owner>` trailer — the Validate Humans In The Loop gate rejects AI commits without human attribution. A committer of 'GitHub' (UI rebase) satisfies neither: amend, add the trailer, and re-sign via the repo's signer flow.",
     "6. If gh pr checks fails with a permission error (Resource not accessible), do NOT block on it — fall back to gh pr view --json mergeStateStatus (CLEAN=green, BLOCKED=red) and note in the checkpoint summary that CI could not be verified directly.",
     "",
     "## Step 2 — Verdict (EXACTLY ONE action, first match wins)",
-    `- no_agent_session AND firstRun → DELEGATE: post a comment that @mentions ${p.agentName} explicitly: one-sentence objective + branch naming rule (ananth/${p.ticket}-<2-3-word-desc>) + draft PR + single signed commit + commit header feat(scaas): + succinct PR desc + no test evidence in desc. MULTI-PR SIZING: estimate the ticket's changed lines first (new service/handler + its tests + docs — tests typically ≈ 50-60% of a slice). If the estimate exceeds ~500 changed lines, mandate a linear STACK of 2-3 PRs split on file boundaries (e.g. shared types/glue → core logic → integration/webhook), each ≤~500 lines: each slice gets its own branch stacked on the previous slice's branch, its own docs updates, ONE signed commit; all branches named ananth/${p.ticket}-<slice>. Instruct the agent to record ALL PR numbers on the ticket and keep evidence.pr pointing at the STACK TOP (merge-retire anchor) while listing the full scan order for the supervisor.`,
+    `- no_agent_session AND firstRun → DELEGATE: post a comment that @mentions ${p.agentName} explicitly: one-sentence objective + branch naming rule (ananth/${p.ticket}-<2-3-word-desc>) + draft PR + single signed commit + commit header feat(scaas): + succinct PR desc + no test evidence in desc. COMMIT ATTRIBUTION (non-negotiable): every commit MUST carry a \`Co-authored-by: Ananth Madhavan <ananthmadhavan@bitgo.com>\` trailer — the Validate Humans In The Loop gate rejects AI commits without human attribution. MULTI-PR SIZING: estimate the ticket's changed lines first (new service/handler + its tests + docs — tests typically ≈ 50-60% of a slice). If the estimate exceeds ~500 changed lines, mandate a linear STACK of 2-3 PRs split on file boundaries (e.g. shared types/glue → core logic → integration/webhook), each ≤~500 lines: each slice gets its own branch stacked on the previous slice's branch, its own docs updates, ONE signed commit; all branches named ananth/${p.ticket}-<slice>. Instruct the agent to record ALL PR numbers on the ticket and keep evidence.pr pointing at the STACK TOP (merge-retire anchor) while listing the full scan order for the supervisor.`,
+    "- ANY commit unsigned OR commits > 1 → SIGN_SQUASH — ABSOLUTE TOP PRIORITY, above review threads, CI nudges, and merge approval. The Humans-In-The-Loop gate blocks merges on BOTH signature AND review, but they are ordered: re-signing rewrites the head, which dismisses reviews — so NEVER chase reviews or approval on an unsigned PR. Comment @mentioning the agent: squash to one commit and sign (git sign-pr before push). After the push, RE-CHECK verification.verified == true on the new head before anything else.",
     "- CI red AND session active AND last activity < 20 min ago → WAIT: update checkpoint only. ('CI red' here and below means real code-check failures only — human-approval gates are excluded per Step 1.)",
     "- CI red AND repeat_failures >= 2 on same failure → NUDGE_SPECIFIC: comment @mentioning the agent with the exact failing log excerpt + one-line hint. repeat_failures is maintained by the Command Centre tick — NEVER modify it yourself.",
     "- CI red AND session stale > 30 min → FIX_CI: post a comment whose body is exactly /fix-ci",
     "- unresolved review threads (not in addressed_threads) AND session stale → NUDGE_THREADS: comment @mentioning the agent listing each unresolved thread URL, one per line; reply inline then push.",
     "- PR unmergeable/conflicts (e.g. stack base merged) → REBASE: comment @mentioning the agent: rebase onto master, retarget base if needed, single commit, re-sign.",
-    "- commits > 1 OR any unsigned → SIGN_SQUASH: comment @mentioning the agent: squash to one commit, sign (git sign-pr before push).",
+    "",
     branchRenameVerdict,
-    `- all green (CI pass + no unresolved threads + single signed commit + approved + conforming branch) → DONE: set status done, evidence.pr, and ALSO set status awaiting_approval with proposed_action 'Approve merge of <PR> for ${p.ticket}?' so the human decides.`,
+    `- all green (HITL gate BOTH satisfied: every commit verification.verified == true AND reviewDecision APPROVED; plus CI pass, no unresolved threads, single commit, conforming branch) → DONE: set status done, evidence.pr, and ALSO set status awaiting_approval with proposed_action 'Approve merge of <PR> for ${p.ticket}?' so the human decides.`,
     "- same failure 3+ times OR agent overwrote existing work → BLOCKED: status blocked, blocker describes it, propose takeover.",
-    "- scope/intent unclear → ASK: status awaiting_approval, proposed_action is ONE focused question. Do not guess.",
+    "- the agent's latest response explicitly states it CANNOT perform the required action (missing tool, no permission, sandbox limitation) → BLOCKED (impossibility): status blocked, proposed_action states exactly what the human must do (e.g. 'sign the commit yourself — git sign-pr origin/master'), do NOT re-nudge the same action; wait for human reply.",
+    "- checkpoint.action has been WAIT for 5+ consecutive wake-ups AND the PR state has not changed → STALLED: status awaiting_approval, proposed_action 'stalled since <date>: waiting on <what>' — surface the stall to the human instead of idling.",
+    "- scope/intent unclear, OR the ticket description and target PR scope do not align, OR a stacked sibling PR is mid-rewrite affecting this head → ASK: status awaiting_approval, proposed_action is ONE focused question. Do not guess and do not pause silently.",
     "- OTHERWISE (nothing above matched: agent active, CI running, nothing stale) → WAIT: update checkpoint only.",
     "",
     "## Queue discipline (before ANY comment verdict)",
@@ -1244,24 +1247,35 @@ async function probeAgentSessions(cwd: string): Promise<void> {
       let newestPrNum: string | undefined;
       try {
         for (const ref of prRefs) {
-          const { stdout: ghOut } = await execFileAsync(
-            "gh",
-            [
-              "api",
-              `repos/${ref.owner}/${ref.repo}/pulls/${ref.prNum}/comments`,
-              "--paginate",
-              "--jq",
-              "max_by(.created_at).created_at",
-            ],
-            { timeout: 8000, maxBuffer: 1024 * 1024 },
-          );
-          // --paginate prints one max per page; ISO strings sort chronologically.
-          const latest = ghOut
-            .trim()
-            .split("\n")
-            .filter((l) => l && l !== "null")
-            .sort()
-            .pop();
+          const latestPerSource: string[] = [];
+          // Review threads (inline) and PR conversation comments are both wake-up
+          // signals — the scanner historically only watched the former.
+          for (const endpoint of [`pulls`, `issues`]) {
+            try {
+              const { stdout: ghOut } = await execFileAsync(
+                "gh",
+                [
+                  "api",
+                  `repos/${ref.owner}/${ref.repo}/${endpoint}/${ref.prNum}/comments`,
+                  "--paginate",
+                  "--jq",
+                  "max_by(.created_at).created_at",
+                ],
+                { timeout: 8000, maxBuffer: 1024 * 1024 },
+              );
+              // --paginate prints one max per page; ISO strings sort chronologically.
+              const latest = ghOut
+                .trim()
+                .split("\n")
+                .filter((l) => l && l !== "null")
+                .sort()
+                .pop();
+              if (latest) latestPerSource.push(latest);
+            } catch {
+              // endpoint not readable; try the other
+            }
+          }
+          const latest = latestPerSource.sort().pop();
           if (latest && (!newestCommentAt || latest > newestCommentAt)) {
             newestCommentAt = latest;
             newestPrNum = ref.prNum;
