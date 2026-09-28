@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { gatherFacts } from "./facts";
+import { decideVerdict } from "./verdict";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
@@ -436,6 +438,9 @@ interface CCConfig {
   models: { supervisor: ModelTier; check: ModelTier; takeover: ModelTier; nudge: ModelTier };
   wakeups: { staleMinutes: number; checkTimeoutMinutes: number };
   agent: { name: string };
+  /** "code-verdicts": tick runs the pure decision function, spawns LLM only to
+   *  render messages. "prompt-verdicts": legacy — worker LLM self-decides. */
+  mode: "prompt-verdicts" | "code-verdicts";
 }
 
 const DEFAULT_CC_CONFIG: CCConfig = {
@@ -457,6 +462,7 @@ async function readCCConfig(cwd: string): Promise<CCConfig> {
     models: { ...DEFAULT_CC_CONFIG.models, ...(loaded.models ?? {}) },
     wakeups: { ...DEFAULT_CC_CONFIG.wakeups, ...(loaded.wakeups ?? {}) },
     agent: { ...DEFAULT_CC_CONFIG.agent, ...(loaded.agent ?? {}) },
+    mode: loaded.mode === "code-verdicts" ? "code-verdicts" : "prompt-verdicts",
   };
 }
 
@@ -469,6 +475,7 @@ const MODEL_ALIASES: Record<string, string> = {
   glm: "openrouter/~z-ai/glm-flash-latest",
   "glm-flash": "openrouter/~z-ai/glm-flash-latest",
   "glm-5.3-flash": "openrouter/~z-ai/glm-flash-latest",
+  "glm-5.3": "openrouter/z-ai/glm-5.3",
 };
 
 async function spawnWorkerPi(opts: {
@@ -525,7 +532,7 @@ function buildCheckWorkerPrompt(p: {
     ? `Target PR (auto-close anchor): ${p.expectedPr}`
     : "No target PR known yet — find it from the ticket's comments/linked PRs. Record it as evidence.pr once found.";
   const scanHint = p.scanPrs?.length
-    ? `MULTI-PR STACK — scan EVERY PR below on every wake-up (threads, CI, commits, merge state). Threads on ANY scan PR are this worker's responsibility; NUDGE_THREADS lists them all. scan order: ${p.scanPrs.join(" → ")}. Target PR above is only the merge/auto-close anchor.`
+    ? `MULTI-PR STACK — scan EVERY PR below on every wake-up (threads, CI, commits, merge state). Threads on ANY scan PR are this worker's responsibility; NUDGE_THREADS lists them all. scan order: ${p.scanPrs.join(" → ")}. Target PR above is only the merge/auto-close anchor. KEEP THIS LIST CURRENT: if the ticket's comments mention any PR of this ticket that is NOT in checkpoint.scan_prs, ADD it (stack order, base first) in your checkpoint write — and if a scan PR is closed/merged, drop it from the list.`
     : "";
   const baseHint = p.basePr ? `Stack base PR: ${p.basePr}.` : "";
   const quirksHint = p.knownRepoQuirks?.length
@@ -725,6 +732,127 @@ async function launchTicketWorkers(
     }
   }
   await renderDashboardWidget(ctx);
+}
+
+/**
+ * runVerdictCycle — the code-verdicts heart. For each worker past the wake-up
+ * cadence: gather deterministic facts, decide via the pure function, apply
+ * state verdicts DIRECTLY (no LLM), spawn the render worker only when the
+ * verdict needs a message composed.
+ */
+async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
+  const config = await readCCConfig(ctx.cwd);
+  const checkpoints = await readWorkerCheckpoints(ctx.cwd);
+  const paths = await ensureState(ctx.cwd);
+  const now = Date.now();
+
+  for (const w of checkpoints) {
+    if (!w.linear_issue_id) continue;
+    if (w.status === "done" || w.status === "failed") continue;
+    const ageMin = (now - new Date(w.updated_at).getTime()) / 60000;
+    if (Number.isNaN(ageMin) || ageMin < config.wakeups.staleMinutes) continue;
+    if (w.check_in_progress_at) {
+      const inflightMin = (now - new Date(w.check_in_progress_at).getTime()) / 60000;
+      if (inflightMin < config.wakeups.checkTimeoutMinutes) continue;
+    }
+
+    let verdict;
+    try {
+      const facts = await gatherFacts(w as never);
+      verdict = decideVerdict(facts, w as never);
+    } catch (error) {
+      await appendEvent(ctx.cwd, {
+        type: "verdict_cycle_failed",
+        worker_id: w.worker_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+
+    const checkpointPath = join(paths.workersDir, `${w.worker_id}.json`);
+
+    // Apply the verdict's checkpoint writes verbatim.
+    for (const [k, v] of Object.entries(verdict.writes)) {
+      (w as unknown as Record<string, unknown>)[k] = v;
+    }
+    if (verdict.needsYou) {
+      w.proposed_action = verdict.needsYou.message;
+      if (!verdict.writes.summary) w.summary = verdict.reason;
+    }
+    w.updated_at = new Date().toISOString();
+
+    if (!verdict.needsRender) {
+      // State-only verdicts: the tick acts alone. FIX_CI is deterministic —
+      // post "/fix-ci" verbatim, no LLM ever involved.
+      if (verdict.verdict === "FIX_CI") {
+        try {
+          await execFileAsync(
+            "linear",
+            ["issue", "comment", "add", w.linear_issue_id, "--body", "/fix-ci"],
+            { timeout: 15_000 },
+          );
+          w.last_nudge_at = new Date().toISOString();
+          w.action = "FIX_CI";
+          await appendEvent(ctx.cwd, { type: "fix_ci_sent", worker_id: w.worker_id });
+        } catch (error) {
+          await appendEvent(ctx.cwd, {
+            type: "fix_ci_failed",
+            worker_id: w.worker_id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      w.check_in_progress_at = null;
+      await writeJson(checkpointPath, w);
+      await appendEvent(ctx.cwd, {
+        type: "verdict_applied",
+        worker_id: w.worker_id,
+        verdict: verdict.verdict,
+        reason: verdict.reason,
+      });
+      continue;
+    }
+
+    // Render verdicts: keep the wake-up worker in flight, spawn with the
+    // existing prompt (step 3 slims this to render-only).
+    w.check_in_progress_at = new Date().toISOString();
+    await writeJson(checkpointPath, w);
+    const prompt = buildCheckWorkerPrompt({
+      workerId: w.worker_id,
+      ticket: w.linear_issue_id,
+      agentName: w.agent_name ?? config.agent.name,
+      expectedPr: w.expected_pr,
+      basePr: w.base_pr,
+      scanPrs: w.scan_prs ?? (w.evidence?.pr ? [w.evidence.pr] : []),
+      repoPath: w.evidence?.repo ?? ctx.cwd,
+      checkpointPath,
+      eventsPath: paths.eventsFile,
+      firstRun: verdict.verdict === "DELEGATE",
+      doNotRename: w.do_not_rename,
+      knownRepoQuirks: w.known_repo_quirks,
+    });
+    try {
+      await spawnWorkerPi({
+        workerId: `${w.worker_id}-check-${now.toString(36)}`,
+        cwd: w.evidence?.repo ?? ctx.cwd,
+        stateCwd: ctx.cwd,
+        model: config.models.check.model,
+        thinking: config.models.check.thinking,
+        prompt,
+      });
+      await appendEvent(ctx.cwd, {
+        type: "render_worker_spawned",
+        worker_id: w.worker_id,
+        verdict: verdict.verdict,
+      });
+    } catch (error) {
+      await appendEvent(ctx.cwd, {
+        type: "check_worker_spawn_failed",
+        worker_id: w.worker_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }
 
 async function maybeSpawnCheckWorkers(ctx: { cwd: string }): Promise<void> {
@@ -1777,7 +1905,12 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
           Date.now() - b > 90_000;
         if (!iOwn) return;
         await setActiveController(ctx.cwd, key); // refresh heartbeat / claim
-        await maybeSpawnCheckWorkers({ cwd: ctx.cwd }).catch(() => {});
+        const cfg = await readCCConfig(ctx.cwd).catch(() => null);
+        if (cfg?.mode === "code-verdicts") {
+          await runVerdictCycle({ cwd: ctx.cwd }).catch(() => {});
+        } else {
+          await maybeSpawnCheckWorkers({ cwd: ctx.cwd }).catch(() => {});
+        }
         await probeAgentSessions(ctx.cwd).catch(() => {});
         await autoCloseMergedWorkers(ctx.cwd).catch(() => {});
       })();
