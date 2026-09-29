@@ -558,20 +558,21 @@ function buildCheckWorkerPrompt(p: {
     "## Step 1 — Gather (Bash: linear + gh CLIs)",
     `1. Sessions: linear api 'query { issue(id:"${p.ticket}") { title state { name } agentSessions { nodes { id status updatedAt } } } }' — pick the latest session for ${p.agentName}.`,
     "2. If a session exists, read its last few activities via linear api agentSession(id, activities) — the last activity timestamp is critical.",
-    "3. If a PR exists: gh pr view <PR> --json state,mergeable,mergeStateStatus,reviewDecision,headRefName,commits ; gh pr checks <PR> ; gh api repos/<owner>/<repo>/pulls/<PR>/comments for review threads AND gh api repos/<owner>/<repo>/issues/<PR>/comments for PR conversation comments — a reviewer's 'take a look at the ticket' style conversation comment is just as much a thread to address as an inline one — REPEAT for EVERY PR in the scan list above, not just the target. Thread ids already in checkpoint.addressed_threads must NOT be re-raised — EXCEPT when a comment on that thread is NEWER than the agent's last reply on it (a reviewer follow-up): then the thread is NOT addressed — re-raise it, and REMOVE its id from addressed_threads in your checkpoint write. addressed_threads is a latch, follow-ups break the latch.",
+    "3. If a PR exists: gh pr view <PR> --json state,mergeable,mergeStateStatus,reviewDecision,headRefName,commits,body ; gh pr checks <PR> ; gh api repos/<owner>/<repo>/pulls/<PR>/comments for review threads AND gh api repos/<owner>/<repo>/issues/<PR>/comments for PR conversation comments — a reviewer's 'take a look at the ticket' style conversation comment is just as much a thread to address as an inline one — REPEAT for EVERY PR in the scan list above, not just the target. Thread ids already in checkpoint.addressed_threads must NOT be re-raised — EXCEPT when a comment on that thread is NEWER than the agent's last reply on it (a reviewer follow-up): then the thread is NOT addressed — re-raise it, and REMOVE its id from addressed_threads in your checkpoint write. addressed_threads is a latch, follow-ups break the latch.",
     "CRITICAL — human-approval gates are NOT CI failures: checks like 'Validate Humans In The Loop' (from the ci-ai-checks workflow) only clear when human reviewers approve the PR. No agent action can ever fix them. When evaluating CI red, naming failing checks, or setting ci_state/ci_failure_signature, EXCLUDE these approval gates entirely. A PR whose only failing check is a human-approval gate is CI-green for verdict purposes: set ci_state to 'approval_pending' (not 'red'), ci_failure_signature to null, and take WAIT or the DONE-verdict awaiting_approval path — NEVER NUDGE_SPECIFIC, FIX_CI, or any other CI-red verdict for it.",
     `4. Branch check: PR headRefName MUST match ananth/${p.ticket}-<2-3-word-desc> (e.g. ananth/SCAAS-11150-order-read).`,
     "5. Commits: exactly ONE per branch; every commit must have verification.verified == true AND a `Co-authored-by: <ticket owner>` trailer — the Validate Humans In The Loop gate rejects AI commits without human attribution. A committer of 'GitHub' (UI rebase) satisfies neither: amend, add the trailer, and re-sign via the repo's signer flow.",
     "6. If gh pr checks fails with a permission error (Resource not accessible), do NOT block on it — fall back to gh pr view --json mergeStateStatus (CLEAN=green, BLOCKED=red) and note in the checkpoint summary that CI could not be verified directly.",
     "",
     "## Step 2 — Verdict (EXACTLY ONE action, first match wins)",
-    `- no_agent_session AND firstRun → DELEGATE: post a comment that @mentions ${p.agentName} explicitly: one-sentence objective + branch naming rule (ananth/${p.ticket}-<2-3-word-desc>) + draft PR + single signed commit + commit header feat(scaas): + succinct PR desc + no test evidence in desc. COMMIT ATTRIBUTION (non-negotiable): every commit MUST carry a \`Co-authored-by: Ananth Madhavan <ananthmadhavan@bitgo.com>\` trailer — the Validate Humans In The Loop gate rejects AI commits without human attribution. MULTI-PR SIZING: estimate the ticket's changed lines first (new service/handler + its tests + docs — tests typically ≈ 50-60% of a slice). If the estimate exceeds ~500 changed lines, mandate a linear STACK of 2-3 PRs split on file boundaries (e.g. shared types/glue → core logic → integration/webhook), each ≤~500 lines: each slice gets its own branch stacked on the previous slice's branch, its own docs updates, ONE signed commit; all branches named ananth/${p.ticket}-<slice>. Instruct the agent to record ALL PR numbers on the ticket and keep evidence.pr pointing at the STACK TOP (merge-retire anchor) while listing the full scan order for the supervisor.`,
+    `- no_agent_session AND firstRun → DELEGATE: post a comment that @mentions ${p.agentName} explicitly: one-sentence objective + branch naming rule (ananth/${p.ticket}-<2-3-word-desc>) + draft PR + single signed commit + commit header feat(scaas): + PR-DESC CONTRACT (hard rule, treat as acceptance criteria): PR body ≤ 10 lines, EXACTLY this structure — (1) what & why in 1-2 sentences; (2) a \`Ticket: ${p.ticket}\` line; (3) ≤ 6 one-line bullets of key changes (file/component level, not per-function); (4) breaking changes / rollout notes, only if they exist. FORBIDDEN anywhere in the PR body: test evidence or CI output, screenshots, restating the diff, design-essay prose, agent/workflow narration ('I have updated the branch...'), process checklists, 'next steps' sections. Tight means tight. COMMIT ATTRIBUTION (non-negotiable): every commit MUST carry a \`Co-authored-by: Ananth Madhavan <ananthmadhavan@bitgo.com>\` trailer — the Validate Humans In The Loop gate rejects AI commits without human attribution. MULTI-PR SIZING: estimate the ticket's changed lines first (new service/handler + its tests + docs — tests typically ≈ 50-60% of a slice). If the estimate exceeds ~500 changed lines, mandate a linear STACK of 2-3 PRs split on file boundaries (e.g. shared types/glue → core logic → integration/webhook), each ≤~500 lines: each slice gets its own branch stacked on the previous slice's branch, its own docs updates, ONE signed commit; all branches named ananth/${p.ticket}-<slice>. Instruct the agent to record ALL PR numbers on the ticket and keep evidence.pr pointing at the STACK TOP (merge-retire anchor) while listing the full scan order for the supervisor.`,
     "- ANY commit unsigned OR commits > 1 → SIGN_SQUASH — ABSOLUTE TOP PRIORITY, above review threads, CI nudges, and merge approval. The Humans-In-The-Loop gate blocks merges on BOTH signature AND review, but they are ordered: re-signing rewrites the head, which dismisses reviews — so NEVER chase reviews or approval on an unsigned PR. Comment @mentioning the agent: squash to one commit and sign (git sign-pr before push). After the push, RE-CHECK verification.verified == true on the new head before anything else.",
     "- CI red AND session active AND last activity < 20 min ago → WAIT: update checkpoint only. ('CI red' here and below means real code-check failures only — human-approval gates are excluded per Step 1.)",
     "- CI red AND repeat_failures >= 2 on same failure → NUDGE_SPECIFIC: comment @mentioning the agent with the exact failing log excerpt + one-line hint. repeat_failures is maintained by the Command Centre tick — NEVER modify it yourself.",
     "- CI red AND session stale > 30 min → FIX_CI: post a comment whose body is exactly /fix-ci",
     "- unresolved review threads (not in addressed_threads) AND session stale → NUDGE_THREADS: comment @mentioning the agent listing each unresolved thread URL, one per line; reply inline then push.",
     "- PR unmergeable/conflicts (e.g. stack base merged) → REBASE: comment @mentioning the agent: rebase onto master, retarget base if needed, single commit, re-sign.",
+    `- PR body violates the PR-DESC CONTRACT (longer than ~10 lines, or any forbidden content: test evidence/CI output, screenshots, diff restatement, design-essay prose, agent narration, process checklists, 'next steps') → NUDGE_DESC_TRIM: comment @mentioning the agent: 'Rewrite the PR body to the contract: what & why (1-2 sentences), "Ticket: ${p.ticket}", ≤6 key-change bullets, rollout notes only if needed — delete everything else. Edit the PR description only, no code changes.' This verdict fires BEFORE the all-green DONE verdict — never surface a bloated desc for merge approval.`,
     "",
     branchRenameVerdict,
     `- all green (HITL gate BOTH satisfied: every commit verification.verified == true AND reviewDecision APPROVED; plus CI pass, no unresolved threads, single commit, conforming branch) → DONE: set status done, evidence.pr, and ALSO set status awaiting_approval with proposed_action 'Approve merge of <PR> for ${p.ticket}?' so the human decides.`,
@@ -586,6 +587,7 @@ function buildCheckWorkerPrompt(p: {
     "- If a prior wake-up already posted a comment on the SAME issue within the last 30 minutes AND the agent has not yet responded to it, that message is QUEUED and pending consumption — do NOT send a duplicate. Take the WAIT verdict instead.",
     "- If the agent HAS responded (queued message consumed) but the issue persists, THEN you may post a new message — but check repeat_failures first.",
     "- If the action you're about to take (verdict name) matches checkpoint.action AND the situation has not changed since last_nudge_at, do NOT re-nudge. Set status to awaiting_approval with proposed_action explaining what's stuck and what the human should do. This is the loop guard — it overrides the verdict table. EXCEPTION: never set awaiting_approval just because the PR is waiting on human CODEOWNER/reviewer approval — parked workers are never scanned for new review threads, and reviewers can leave actionable comments at any time. In that case keep status working with action WAIT so the tick keeps watching the PR.",
+    "- Also read each PR body and score it against the PR-DESC CONTRACT (DELEGATE rule below): longer than ~10 lines or any forbidden content → desc violation, verdict NUDGE_DESC_TRIM.",
     "",
     "## Progress narration (live dashboard)",
     `As you work, after EACH major step, update the checkpoint's \"summary\" field with a short present-tense line of what you are doing right now (e.g. \"reading ralph's session activity\", \"checking CI on the PR\", \"posting nudge comment\"). Do it with a compact python3 one-liner that loads ${p.checkpointPath}, sets summary and updated_at (RFC3339 UTC from date -u +%Y-%m-%dT%H:%M:%SZ — never hand-write timestamps), and saves, keeping all other fields intact. This is what the human sees live.`,
@@ -1633,9 +1635,10 @@ function formatConsole(s: ConsoleSnap, width: number): string[] {
           { title: "TICKET", min: 11 },
           { title: "PR", min: 5 },
           { title: "CI", min: 4 },
-          { title: "STATUS / NOW", min: 20, flex: 1 },
+          { title: "STATUS / NOW", min: 30, flex: 1 },
         ],
         s.ifRows,
+        { singleLine: true },
       ),
     );
   if (s.moreInFlight > 0) out.push(`  \u2026 +${s.moreInFlight} more in flight`);
@@ -1803,6 +1806,7 @@ function renderBoxTable(
   totalWidth: number,
   columns: Array<{ title: string; min: number; flex?: number }>,
   rows: string[][],
+  opts?: { singleLine?: boolean },
 ): string[] {
   const n = columns.length;
   const overhead = 3 * n + 1; // │ + " x " padding per column + trailing │
@@ -1828,9 +1832,11 @@ function renderBoxTable(
   const rowLines = (cells: string[]): string[] => {
     const wrapped = widths.map((w, i) => {
       const t = (cells[i] ?? "").replace(/\s+/g, " ").trim();
-      return t ? wrapText(t, w, 12) : [""];
+      if (!t) return [""];
+      // singleLine: every row is exactly ONE line — truncate, never wrap
+      return opts?.singleLine ? [truncateToWidth(t, w, "\u2026")] : wrapText(t, w, 12);
     });
-    const height = Math.max(...wrapped.map((c) => c.length), 1);
+    const height = opts?.singleLine ? 1 : Math.max(...wrapped.map((c) => c.length), 1);
     const out: string[] = [];
     for (let li = 0; li < height; li++) {
       const parts = widths.map((w, ci) => {
