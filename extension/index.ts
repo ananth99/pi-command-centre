@@ -1635,10 +1635,9 @@ function formatConsole(s: ConsoleSnap, width: number): string[] {
           { title: "TICKET", min: 11 },
           { title: "PR", min: 5 },
           { title: "CI", min: 4 },
-          { title: "STATUS / NOW", min: 30, flex: 1 },
+          { title: "STATUS / NOW", min: 20, flex: 1 },
         ],
         s.ifRows,
-        { singleLine: true },
       ),
     );
   if (s.moreInFlight > 0) out.push(`  \u2026 +${s.moreInFlight} more in flight`);
@@ -1798,7 +1797,6 @@ function renderBoxTable(
   totalWidth: number,
   columns: Array<{ title: string; min: number; flex?: number }>,
   rows: string[][],
-  opts?: { singleLine?: boolean },
 ): string[] {
   const n = columns.length;
   const overhead = 3 * n + 1; // │ + " x " padding per column + trailing │
@@ -1824,11 +1822,9 @@ function renderBoxTable(
   const rowLines = (cells: string[]): string[] => {
     const wrapped = widths.map((w, i) => {
       const t = (cells[i] ?? "").replace(/\s+/g, " ").trim();
-      if (!t) return [""];
-      // singleLine: every row is exactly ONE line — truncate, never wrap
-      return opts?.singleLine ? [truncateToWidth(t, w, "\u2026")] : wrapText(t, w, 12);
+      return t ? wrapText(t, w, 12) : [""];
     });
-    const height = opts?.singleLine ? 1 : Math.max(...wrapped.map((c) => c.length), 1);
+    const height = Math.max(...wrapped.map((c) => c.length), 1);
     const out: string[] = [];
     for (let li = 0; li < height; li++) {
       const parts = widths.map((w, ci) => {
