@@ -1683,15 +1683,7 @@ async function buildBeaconLines(cwd: string): Promise<string[]> {
   const beacon: string[] = [
     `⚡ CC${hot} · needs-you ${needsYou} · in-flight ${working.length} · landing ${landing.length} · queue ${openQueue.length} · alt+c console`,
   ];
-  const top = awaiting[0] ?? blockers[0];
-  if (top) {
-    beacon.push(
-      `  ▸ ${top.worker_id} (${top.linear_issue_id ?? "-"}) — ${
-        awaiting.includes(top) ? "awaiting your input" : top.status
-      } · alt+c…`,
-    );
-  }
-  return beacon.slice(0, 3);
+  return beacon.slice(0, 1);
 }
 
 async function renderDashboardWidget(ctx: ExtensionCommandContext) {
