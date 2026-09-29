@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { gatherFacts } from "./facts";
+import { gatherFacts, firstUntrackedPr } from "./facts";
 import { decideVerdict } from "./verdict";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -1021,6 +1021,70 @@ async function getWorkerLiveLine(workerId: string): Promise<string | null> {
 /** Tick-level agent-session probe (no LLM): worker_id -> live Linear session status. */
 const liveAgentStatus = new Map<string, { status: string; activityAt?: string; checkedAt: number }>();
 
+const reviveSearched = new Map<string, number>();
+
+/**
+ * maybeReviveForNewPRs — a done worker's lifecycle belongs to the TICKET, not
+ * to the merged PR that retired it. If a new open PR referencing the ticket
+ * appears later, resurrect the worker: done → working, re-anchored onto the
+ * new PR (merged refs pruned from scan_prs so auto-close won't insta-retire).
+ */
+async function maybeReviveForNewPRs(cwd: string): Promise<void> {
+  const checkpoints = await readWorkerCheckpoints(cwd);
+  const paths = await ensureState(cwd);
+  const now = Date.now();
+
+  for (const w of checkpoints) {
+    if (w.status !== "done" || !w.linear_issue_id || !w.evidence?.repo) continue;
+    const prev = reviveSearched.get(w.worker_id);
+    if (prev && now - prev < 60_000) continue;
+    reviveSearched.set(w.worker_id, now);
+
+    const repoPath = w.evidence.repo;
+    const opts = { cwd: repoPath, timeout: 10_000, maxBuffer: 1024 * 1024 };
+    try {
+      const { stdout: repoOut } = await execFileAsync(
+        "gh",
+        ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+        opts,
+      );
+      const fullName = repoOut.trim();
+      if (!fullName) continue;
+      const { stdout: searchOut } = await execFileAsync(
+        "gh",
+        ["search", "prs", w.linear_issue_id, "--repo", fullName, "--state", "open", "--json", "number,url", "--limit", "10"],
+        opts,
+      );
+      const results = JSON.parse(searchOut) as Array<{ number: number; url: string }>;
+      const fresh = firstUntrackedPr(results, [
+        w.expected_pr,
+        w.evidence.pr,
+        ...(w.scan_prs ?? []),
+      ]);
+      if (!fresh) continue;
+
+      const knownScan = (w.scan_prs ?? []).filter((ref) => ref !== fresh.url);
+      w.status = "working";
+      w.action = "REVIVED";
+      w.expected_pr = `#${fresh.number}`;
+      w.evidence.pr = fresh.url;
+      w.scan_prs = [fresh.url, ...knownScan];
+      w.summary = `New PR #${fresh.number} on ${w.linear_issue_id} — reviving supervision (merged refs pruned)`;
+      w.updated_at = new Date().toISOString();
+      w.check_in_progress_at = null;
+      await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+      await appendEvent(cwd, {
+        type: "worker_revived",
+        worker_id: w.worker_id,
+        ticket: w.linear_issue_id,
+        pr: `#${fresh.number}`,
+      });
+    } catch {
+      // search failed (private repo/permissions/rate) — retry next window
+    }
+  }
+}
+
 const prMergeChecked = new Map<string, number>();
 
 /** Tick-level (no LLM): if a worker's PR is merged, auto-close the worker. */
@@ -1913,6 +1977,7 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
         }
         await probeAgentSessions(ctx.cwd).catch(() => {});
         await autoCloseMergedWorkers(ctx.cwd).catch(() => {});
+        await maybeReviveForNewPRs(ctx.cwd).catch(() => {});
       })();
     }, 20000);
     refreshTimers.set(key, timer);

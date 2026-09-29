@@ -11,6 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { decideVerdict } from "./verdict.ts";
+import { firstUntrackedPr } from "./facts.ts";
 import type { WorkerFacts, PrFact } from "./facts.ts";
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
@@ -196,6 +197,23 @@ test("branch-conforming with slice suffix passes", () => {
   });
   const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
   assert.notEqual(v.verdict, "BRANCH_RENAME");
+});
+
+test("revival: a new open PR on a done ticket is detected", () => {
+  const search = [
+    { number: 964, url: "https://github.com/BitGo/x/pull/964" },
+    { number: 1042, url: "https://github.com/BitGo/x/pull/1042" },
+  ];
+  // worker tracked #964 (merged, retired); #1042 is new
+  const fresh = firstUntrackedPr(search, ["#964", "https://github.com/BitGo/x/pull/964"]);
+  assert.equal(fresh?.number, "1042");
+  assert.equal(fresh?.url, "https://github.com/BitGo/x/pull/1042");
+});
+
+test("revival: nothing new → stays retired (no churn)", () => {
+  const search = [{ number: 964, url: "https://github.com/BitGo/x/pull/964" }];
+  const fresh = firstUntrackedPr(search, ["#964"]);
+  assert.equal(fresh, null);
 });
 
 test("fresh CI failure posts /fix-ci deterministically (no LLM)", () => {

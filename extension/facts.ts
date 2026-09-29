@@ -307,3 +307,25 @@ export function deriveCiState(prs: PrFact[]): CiState {
   }
   return "unknown";
 }
+
+/**
+ * Revival helper: given gh-search results for a ticket's open PRs and the
+ * PR refs the worker already tracked, return the first PR the worker never
+ * saw (null if nothing new). Pure — unit-tested.
+ */
+export function firstUntrackedPr(
+  searchResults: Array<{ number: number; url: string }>,
+  knownRefs: Array<string | undefined | null>,
+): { number: string; url: string } | null {
+  const known = new Set<string>();
+  for (const ref of knownRefs) {
+    if (!ref) continue;
+    const n = parsePrNum(ref);
+    if (n) known.add(n);
+  }
+  for (const r of searchResults) {
+    const n = String(r.number);
+    if (!known.has(n)) return { number: n, url: r.url };
+  }
+  return null;
+}
