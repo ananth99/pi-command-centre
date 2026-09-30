@@ -824,6 +824,11 @@ async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
     // decided; the worker composes, posts, flushes, and classifies. Non-DELEGATE
     // renders run on the cheap nudge tier.
     w.check_in_progress_at = new Date().toISOString();
+    // Bookkeeping at spawn (render workers touch only reply_class): this arms
+    // the guarded() loop-guard so the same verdict can't be re-rendered in a
+    // loop — the spam-regression fix.
+    w.last_nudge_at = new Date().toISOString();
+    w.action = verdict.verdict;
     await writeJson(checkpointPath, w);
     const isDelegate = verdict.verdict === "DELEGATE";
     const agentName = w.agent_name ?? config.agent.name;
@@ -862,6 +867,41 @@ async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+}
+
+const reapThrottleMs = 60_000;
+let lastReapAt = 0;
+
+/**
+ * Watchdog (flaw #14): render/check workers can hang (stalled model call,
+ * blocked CLI). zmx keeps their PTYs alive forever. Kill any zmx session
+ * named *-render-* / *-check-* that never ended and is older than 20 min.
+ */
+async function reapStaleRenderSessions(): Promise<void> {
+  const now = Date.now();
+  if (now - lastReapAt < reapThrottleMs) return;
+  lastReapAt = now;
+  try {
+    const { stdout } = await execFileAsync("zmx", ["list"], { timeout: 8_000 });
+    for (const line of stdout.split("\n")) {
+      const nameM = line.match(/name=([^\s]+)/);
+      const createdM = line.match(/created=(\d+)/);
+      if (!nameM || !createdM) continue;
+      const name = nameM[1]!;
+      if (!/-render-|-check-/.test(name)) continue;
+      if (line.includes("ended=")) continue; // already exited — not a leak
+      const ageMin = (now - Number(createdM[1]) * 1000) / 60_000;
+      if (ageMin < 20) continue;
+      try {
+        await execFileAsync("zmx", ["kill", name], { timeout: 8_000 });
+        console.log(`[cc-reaper] killed stale worker session ${name} (age ${Math.round(ageMin)}m)`);
+      } catch {
+        // already dead
+      }
+    }
+  } catch {
+    // zmx unavailable — skip this window
   }
 }
 
@@ -1980,6 +2020,7 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
         await probeAgentSessions(ctx.cwd).catch(() => {});
         await autoCloseMergedWorkers(ctx.cwd).catch(() => {});
         await maybeReviveForNewPRs(ctx.cwd).catch(() => {});
+        await reapStaleRenderSessions().catch(() => {});
       })();
     }, 20000);
     refreshTimers.set(key, timer);
