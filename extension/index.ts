@@ -80,6 +80,7 @@ interface WorkerCheckpoint {
   // v3 — code-verdicts fields (owned by tick/render worker, never the legacy prompt)
   reply_class?: string;
   wait_streak?: number;
+  render_count?: number;
 }
 
 interface QueueItem {
@@ -445,6 +446,9 @@ interface CCConfig {
   /** "code-verdicts": tick runs the pure decision function, spawns LLM only to
    *  render messages. "prompt-verdicts": legacy — worker LLM self-decides. */
   mode: "prompt-verdicts" | "code-verdicts";
+  /** Budgets: cap what costs money — render spawns. State verdicts are free.
+   *  Exhausted worker → BLOCKED + surfaced to the human. Human reply resets. */
+  budgets: { maxRenders: number };
 }
 
 const DEFAULT_CC_CONFIG: CCConfig = {
@@ -456,6 +460,7 @@ const DEFAULT_CC_CONFIG: CCConfig = {
   },
   wakeups: { staleMinutes: 10, checkTimeoutMinutes: 15 },
   agent: { name: "ralph" },
+  budgets: { maxRenders: 15 },
 };
 
 async function readCCConfig(cwd: string): Promise<CCConfig> {
@@ -467,6 +472,7 @@ async function readCCConfig(cwd: string): Promise<CCConfig> {
     wakeups: { ...DEFAULT_CC_CONFIG.wakeups, ...(loaded.wakeups ?? {}) },
     agent: { ...DEFAULT_CC_CONFIG.agent, ...(loaded.agent ?? {}) },
     mode: loaded.mode === "code-verdicts" ? "code-verdicts" : "prompt-verdicts",
+    budgets: { ...DEFAULT_CC_CONFIG.budgets, ...(loaded.budgets ?? {}) },
   };
 }
 

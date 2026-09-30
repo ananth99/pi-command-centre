@@ -251,6 +251,26 @@ export function decideVerdict(
     );
   }
 
+  // ── 6b. "Request changes" reviews are the PLATFORM's trigger now (2026-09-30
+  //     capability: Ralph auto-detects CHANGES_REQUESTED and addresses it).
+  //     If threads exist AND a changes-requested review landed AND the agent
+  //     session is active, CC stays hands-off — WAIT, no render, no duplicate
+  //     nudge. Backstop below: if the session is NOT active, threads still
+  //     escalate through the normal rules (platform trigger may have failed).
+  const changesRequested = open.some((p) => p.reviewDecision === "CHANGES_REQUESTED");
+  if (
+    changesRequested &&
+    facts.unresolvedThreadIds.length > 0 &&
+    facts.sessionStatus === "active"
+  ) {
+    return {
+      verdict: "WAIT",
+      reason: "CHANGES_REQUESTED review — platform auto-triggers the agent; CC hands-off",
+      needsRender: false,
+      writes: { wait_streak: (checkpoint.wait_streak ?? 0) + 1 },
+    };
+  }
+
   // ── 7. Unresolved review threads (not in the addressed latch).
   if (facts.unresolvedThreadIds.length > 0) {
     return guarded(

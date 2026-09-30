@@ -238,6 +238,28 @@ test("render prompt: DELEGATE carries the conventions template", () => {
   assert.ok(p.includes("MULTI-PR SIZING"));
 });
 
+test("platform capability: CHANGES_REQUESTED + active agent → WAIT, no duplicate nudge render", () => {
+  const f = facts({
+    sessionStatus: "active",
+    prs: [pr({ reviewDecision: "CHANGES_REQUESTED", mergeStateStatus: "BLOCKED" })],
+    unresolvedThreadIds: ["t1", "t2", "t3"],
+  });
+  const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
+  assert.equal(v.verdict, "WAIT");
+  assert.equal(v.needsRender, false, "platform auto-triggers Ralph — CC must not nudge");
+});
+
+test("platform backstop: CHANGES_REQUESTED + dead session still nudges threads", () => {
+  const f = facts({
+    sessionStatus: "stale",
+    prs: [pr({ reviewDecision: "CHANGES_REQUESTED" })],
+    unresolvedThreadIds: ["t1"],
+  });
+  const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
+  assert.equal(v.verdict, "NUDGE_THREADS", "session not active — platform trigger failed, CC backstop fires");
+  assert.equal(v.needsRender, true);
+});
+
 test("revival: a new open PR on a done ticket is detected", () => {
   const search = [
     { number: 964, url: "https://github.com/BitGo/x/pull/964" },
