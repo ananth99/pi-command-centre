@@ -44,7 +44,7 @@ export function buildRenderPrompt(p: RenderPromptParams): string {
     `@mention "${p.agentName}" explicitly (unmentioned comments are never picked up). Be specific from the facts: PR numbers, SHAs, thread URLs, exact failures. Shapes by verdict:`,
     "  SIGN_SQUASH → name the offending commit + its verified state; squash to exactly one commit; sign via git sign-pr before push; note that re-signing rewrites the head (reviews dismiss).",
     "  ATTRIBUTION_FIX → name the commit and the missing trailer (Co-authored-by: Ananth Madhavan <ananthmadhavan@bitgo.com>); the Humans In The Loop gate rejects AI commits without human attribution.",
-    "  NUDGE_THREADS → list each thread URL from the facts, one per line; instruct inline replies then push.",
+    "  NUDGE_THREADS → instruct the agent to REPLY INLINE on each review thread URL from the facts (one reply per thread, on the thread itself — gh api or review replies). NEVER summarize answers in a top-level PR conversation comment. Also: never acknowledge bot comments (linkbacks, CI reports, readiness notices) — that's noise; delete any such comments you already made. Inline on the thread is the ONLY correct place for answers to review comments.",
     "  REBASE → rebase onto master, retarget the PR base if stacked, single commit, re-sign.",
     "  BRANCH_RENAME → use GitHub's branch rename API (gh api repos/<owner>/<repo>/branches/<old>/rename -f new_name=...), NEVER push-new-and-delete-old (that auto-closes PRs).",
     "  ASK → one focused question for the human, as specified in the verdict reason.",
