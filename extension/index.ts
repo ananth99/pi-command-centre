@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { gatherFacts, firstUntrackedPr } from "./facts";
 import { decideVerdict } from "./verdict";
+import { buildRenderPrompt, DELEGATE_TEMPLATE } from "./render";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
@@ -76,6 +77,9 @@ interface WorkerCheckpoint {
   do_not_rename?: boolean;
   known_repo_quirks?: string[];
   rename_attempts?: number;
+  // v3 — code-verdicts fields (owned by tick/render worker, never the legacy prompt)
+  reply_class?: string;
+  wait_streak?: number;
 }
 
 interface QueueItem {
@@ -758,9 +762,10 @@ async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
       if (inflightMin < config.wakeups.checkTimeoutMinutes) continue;
     }
 
+    let facts: Awaited<ReturnType<typeof gatherFacts>>;
     let verdict;
     try {
-      const facts = await gatherFacts(w as never);
+      facts = await gatherFacts(w as never);
       verdict = decideVerdict(facts, w as never);
     } catch (error) {
       await appendEvent(ctx.cwd, {
@@ -815,37 +820,40 @@ async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
       continue;
     }
 
-    // Render verdicts: keep the wake-up worker in flight, spawn with the
-    // existing prompt (step 3 slims this to render-only).
+    // Render verdicts: spawn the SLIM render-only worker (step 3). The tick
+    // decided; the worker composes, posts, flushes, and classifies. Non-DELEGATE
+    // renders run on the cheap nudge tier.
     w.check_in_progress_at = new Date().toISOString();
     await writeJson(checkpointPath, w);
-    const prompt = buildCheckWorkerPrompt({
+    const isDelegate = verdict.verdict === "DELEGATE";
+    const agentName = w.agent_name ?? config.agent.name;
+    const prompt = buildRenderPrompt({
       workerId: w.worker_id,
       ticket: w.linear_issue_id,
-      agentName: w.agent_name ?? config.agent.name,
-      expectedPr: w.expected_pr,
-      basePr: w.base_pr,
-      scanPrs: w.scan_prs ?? (w.evidence?.pr ? [w.evidence.pr] : []),
-      repoPath: w.evidence?.repo ?? ctx.cwd,
+      agentName,
+      verdict: verdict.verdict,
+      reason: verdict.reason,
+      facts,
       checkpointPath,
       eventsPath: paths.eventsFile,
-      firstRun: verdict.verdict === "DELEGATE",
-      doNotRename: w.do_not_rename,
-      knownRepoQuirks: w.known_repo_quirks,
+      delegateTemplate: isDelegate
+        ? DELEGATE_TEMPLATE(w.linear_issue_id, agentName)
+        : undefined,
     });
     try {
       await spawnWorkerPi({
-        workerId: `${w.worker_id}-check-${now.toString(36)}`,
+        workerId: `${w.worker_id}-render-${now.toString(36)}`,
         cwd: w.evidence?.repo ?? ctx.cwd,
         stateCwd: ctx.cwd,
-        model: config.models.check.model,
-        thinking: config.models.check.thinking,
+        model: isDelegate ? config.models.check.model : config.models.nudge.model,
+        thinking: isDelegate ? config.models.check.thinking : config.models.nudge.thinking,
         prompt,
       });
       await appendEvent(ctx.cwd, {
         type: "render_worker_spawned",
         worker_id: w.worker_id,
         verdict: verdict.verdict,
+        tier: isDelegate ? "check" : "nudge",
       });
     } catch (error) {
       await appendEvent(ctx.cwd, {
@@ -2027,6 +2035,7 @@ async function doReply(
   checkpoint.last_nudge_at = new Date().toISOString();
   checkpoint.updated_at = new Date().toISOString();
   checkpoint.summary = `You replied to ${agent}: ${message.slice(0, 60)}`;
+  checkpoint.reply_class = undefined; // human replied — impossibility block lifts
   await writeJson(checkpointPath, checkpoint);
   liveAgentStatus.delete(workerId);
   const flushNote = await flushQueuedAgentActivity(checkpoint.linear_issue_id);

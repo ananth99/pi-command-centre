@@ -12,6 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { decideVerdict } from "./verdict.ts";
 import { firstUntrackedPr } from "./facts.ts";
+import { buildRenderPrompt, DELEGATE_TEMPLATE } from "./render.ts";
 import type { WorkerFacts, PrFact } from "./facts.ts";
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
@@ -197,6 +198,44 @@ test("branch-conforming with slice suffix passes", () => {
   });
   const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
   assert.notEqual(v.verdict, "BRANCH_RENAME");
+});
+
+test("render prompt: slim and obedient — no gather steps, no verdict table", () => {
+  const p = buildRenderPrompt({
+    workerId: "ralph-11159",
+    ticket: "SCAAS-11159",
+    agentName: "ralph",
+    verdict: "SIGN_SQUASH",
+    reason: "PR #964: head not REST-verified",
+    facts: { prs: [{ num: "964", commits: [{ sha: "7eb8315a", verified: false }] }] },
+    checkpointPath: "/tmp/cp.json",
+    eventsPath: "/tmp/ev.jsonl",
+  });
+  assert.ok(p.includes("SIGN_SQUASH"), "carries the verdict");
+  assert.ok(p.includes("7eb8315a"), "carries the facts");
+  assert.ok(p.includes("reply_class"), "asks for the classification");
+  assert.ok(p.includes("agentActivitySendQueued"), "asks for queue flush");
+  assert.ok(!p.includes("Gather (Bash"), "must NOT gather");
+  assert.ok(!p.includes("Verdict (EXACTLY ONE"), "must NOT decide");
+  assert.ok(!p.includes("first match wins"), "no legacy verdict prose");
+});
+
+test("render prompt: DELEGATE carries the conventions template", () => {
+  const tpl = DELEGATE_TEMPLATE("SCAAS-11159", "ralph");
+  const p = buildRenderPrompt({
+    workerId: "w",
+    ticket: "SCAAS-11159",
+    agentName: "ralph",
+    verdict: "DELEGATE",
+    reason: "no agent session yet",
+    facts: {},
+    checkpointPath: "/tmp/cp.json",
+    eventsPath: "/tmp/ev.jsonl",
+    delegateTemplate: tpl,
+  });
+  assert.ok(p.includes("Co-authored-by: Ananth Madhavan"));
+  assert.ok(p.includes("ananth/SCAAS-11159"));
+  assert.ok(p.includes("MULTI-PR SIZING"));
 });
 
 test("revival: a new open PR on a done ticket is detected", () => {
