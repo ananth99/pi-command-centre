@@ -329,3 +329,27 @@ export function firstUntrackedPr(
   }
   return null;
 }
+
+/**
+ * PR discovery (v3 backfill): workers launched without PR linkage can't see
+ * their ticket's PRs — the render-only worker never gathers. The tick calls
+ * this to find the ticket's open PRs via search, then persists them into
+ * scan_prs. Stack-top heuristic: the highest PR number (later slices open last).
+ */
+export async function discoverOpenPrsForTicket(
+  ticket: string,
+  repoPath: string,
+  deps: FactDeps = defaultDeps(),
+): Promise<Array<{ number: string; url: string }>> {
+  const opts = { cwd: repoPath, timeout: 10_000, maxBuffer: 1024 * 1024 };
+  const r = await deps.exec("gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], opts);
+  const fullName = r.stdout.trim();
+  if (!fullName) return [];
+  const s = await deps.exec(
+    "gh",
+    ["search", "prs", ticket, "--repo", fullName, "--state", "open", "--json", "number,url", "--limit", "10"],
+    opts,
+  );
+  const raw = JSON.parse(s.stdout) as Array<{ number: number; url: string }>;
+  return raw.map((x) => ({ number: String(x.number), url: x.url }));
+}

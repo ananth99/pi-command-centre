@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { gatherFacts, firstUntrackedPr } from "./facts";
+import { gatherFacts, firstUntrackedPr, discoverOpenPrsForTicket } from "./facts";
 import { decideVerdict } from "./verdict";
 import { buildRenderPrompt, DELEGATE_TEMPLATE } from "./render";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -766,6 +766,34 @@ async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
     if (w.check_in_progress_at) {
       const inflightMin = (now - new Date(w.check_in_progress_at).getTime()) / 60000;
       if (inflightMin < config.wakeups.checkTimeoutMinutes) continue;
+    }
+
+    // v3 PR-discovery backfill: a worker launched without PR linkage is blind
+    // (render workers never gather). Discover the ticket's open PRs once and
+    // persist the linkage; highest PR number = stack top (merge-retire anchor).
+    if (
+      !w.scan_prs?.length &&
+      !w.expected_pr &&
+      !w.evidence?.pr &&
+      w.linear_issue_id &&
+      w.evidence?.repo
+    ) {
+      try {
+        const found = await discoverOpenPrsForTicket(w.linear_issue_id, w.evidence.repo);
+        if (found.length) {
+          const top = found.reduce((a, b) => (Number(b.number) > Number(a.number) ? b : a));
+          w.scan_prs = found.map((f) => f.url);
+          w.expected_pr = `#${top.number}`;
+          w.evidence.pr = top.url;
+          await appendEvent(ctx.cwd, {
+            type: "prs_discovered",
+            worker_id: w.worker_id,
+            prs: w.scan_prs,
+          });
+        }
+      } catch {
+        // discovery failed — worker stays as-is; retried next cycle
+      }
     }
 
     let facts: Awaited<ReturnType<typeof gatherFacts>>;
