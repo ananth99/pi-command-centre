@@ -37,7 +37,7 @@ No slash commands — they echoed into the editor and cost LLM turns.
 2. **`probeAgentSessions`** — live agent session status; reconciles stale "needs you"; parks/unparks the landing lane; watches parked workers for new review-thread activity.
 3. **`autoCloseMergedWorkers`** — retires on merge; resumes parked workers on review approval.
 4. **`maybeReviveForNewPRs`** — a `done` worker whose ticket gained a new PR resurrects, re-anchored and pruned.
-5. **`reapStaleRenderSessions`** — watchdog: kills zombie zmx sessions past the timeout.
+5. **`reapStaleRenderSessions`** — watchdog: kills zombie zmx sessions past the timeout. Also reclaims PTYs from *ended* sessions older than 1 hour (the zmx process holds `/dev/ptmx` for scrollback even after the worker inside exits — ~40 orphaned PTYs were found accumulating; the reaper previously skipped them because it read `ended=` as "not a leak".)
 
 ### Verdict rules (lessons encoded, ticket IDs scrubbed)
 
