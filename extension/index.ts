@@ -798,10 +798,19 @@ async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
 
     let facts: Awaited<ReturnType<typeof gatherFacts>>;
     let verdict;
+    // Claim the worker BEFORE gathering (facts take seconds) — concurrent tick
+    // instances holding the same stale snapshot must not double-run this worker
+    // (the 16s-apart duplicate FIX_CI race). On failure, release the claim.
+    const claimPath = join((await ensureState(ctx.cwd)).workersDir, `${w.worker_id}.json`);
+    w.check_in_progress_at = new Date().toISOString();
+    await writeJson(claimPath, w);
     try {
       facts = await gatherFacts(w as never);
       verdict = decideVerdict(facts, w as never);
     } catch (error) {
+      w.check_in_progress_at = null;
+      w.updated_at = new Date().toISOString();
+      await writeJson(claimPath, w);
       await appendEvent(ctx.cwd, {
         type: "verdict_cycle_failed",
         worker_id: w.worker_id,
