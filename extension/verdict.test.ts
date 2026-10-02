@@ -44,7 +44,7 @@ function pr(over: Partial<PrFact> = {}): PrFact {
 
 function facts(over: Partial<WorkerFacts> = {}): WorkerFacts {
   return {
-    workerId: "ralph-11159",
+    workerId: "worker-11159",
     ticket: "SCAAS-11159",
     sessionStatus: "complete",
     lastActivityAt: "2026-09-27T11:40:00Z",
@@ -58,7 +58,7 @@ function facts(over: Partial<WorkerFacts> = {}): WorkerFacts {
 
 const cp = (over: Record<string, unknown> = {}) =>
   ({
-    worker_id: "ralph-11159",
+    worker_id: "worker-11159",
     status: "working",
     action: undefined,
     linear_issue_id: "SCAAS-11159",
@@ -119,7 +119,7 @@ test("incident: unsigned commit outranks review — SIGN_SQUASH is absolute prio
   const f = facts({
     prs: [pr({
       commits: [
-        { sha: "a1", authorName: "Ralph", committerName: "example-bot", verified: false, coAuthoredByHuman: true },
+        { sha: "a1", authorName: "Agent", committerName: "example-bot", verified: false, coAuthoredByHuman: true },
       ],
       commitOk: false,
       threads: [{ id: "t1", kind: "review", lastCommentAt: "2026-09-27T10:00:00Z" }],
@@ -202,9 +202,9 @@ test("branch-conforming with slice suffix passes", () => {
 
 test("render prompt: slim and obedient — no gather steps, no verdict table", () => {
   const p = buildRenderPrompt({
-    workerId: "ralph-11159",
+    workerId: "worker-11159",
     ticket: "SCAAS-11159",
-    agentName: "ralph",
+    agentName: "the-agent",
     verdict: "SIGN_SQUASH",
     reason: "PR #964: head not REST-verified",
     facts: { prs: [{ num: "964", commits: [{ sha: "7eb8315a", verified: false }] }] },
@@ -221,11 +221,11 @@ test("render prompt: slim and obedient — no gather steps, no verdict table", (
 });
 
 test("render prompt: DELEGATE carries the conventions template", () => {
-  const tpl = DELEGATE_TEMPLATE("SCAAS-11159", "ralph");
+  const tpl = DELEGATE_TEMPLATE("SCAAS-11159", "the-agent");
   const p = buildRenderPrompt({
     workerId: "w",
     ticket: "SCAAS-11159",
-    agentName: "ralph",
+    agentName: "the-agent",
     verdict: "DELEGATE",
     reason: "no agent session yet",
     facts: {},
@@ -246,7 +246,7 @@ test("platform capability: CHANGES_REQUESTED + active agent → WAIT, no duplica
   });
   const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
   assert.equal(v.verdict, "WAIT");
-  assert.equal(v.needsRender, false, "platform auto-triggers Ralph — CC must not nudge");
+  assert.equal(v.needsRender, false, "platform auto-triggers the agent — CC must not nudge");
 });
 
 test("platform backstop: CHANGES_REQUESTED + dead session still nudges threads", () => {

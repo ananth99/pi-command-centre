@@ -131,7 +131,7 @@ export async function actHotkey(ctx: ExtensionCommandContext): Promise<void> {
   if (!action) return;
   if (action.startsWith("Reply")) {
     const message = await ctx.ui.input(
-      `Reply to ${target.agent_name ?? "ralph"} on ${target.linear_issue_id ?? "its ticket"}`,
+      `Reply to ${target.agent_name ?? "the-agent"} on ${target.linear_issue_id ?? "its ticket"}`,
       "Your answer (posted as an @mention + queue-flushed):",
     );
     if (message) await doReply(ctx, target.worker_id, message);
@@ -187,7 +187,7 @@ export async function doReply(
     ctx.ui.notify(`Worker ${workerId} not found or has no linked ticket`, "warn");
     return;
   }
-  const agent = checkpoint.agent_name ?? "ralph";
+  const agent = checkpoint.agent_name ?? "the-agent";
   try {
     await execFileAsync(
       "linear",
@@ -230,7 +230,7 @@ export async function launchHotkey(ctx: ExtensionCommandContext): Promise<void> 
     .filter(Boolean);
   if (!tickets.length) return;
   const repo = (await ctx.ui.input("Repo path", "Repo (blank = current dir):")) ?? "";
-  const agent = (await ctx.ui.input("Agent", "Agent name (blank = ralph):")) ?? "";
+  const agent = (await ctx.ui.input("Agent", "Agent name (blank = the-agent):")) ?? "";
   await launchTicketWorkers(
     {
       workerId: "",
@@ -272,7 +272,7 @@ export async function replyHotkey(ctx: ExtensionCommandContext): Promise<void> {
     target = chosen;
   }
   const message = await ctx.ui.input(
-    `Reply to ${target.agent_name ?? "ralph"} on ${target.linear_issue_id}`,
+    `Reply to ${target.agent_name ?? "the-agent"} on ${target.linear_issue_id}`,
     "Your answer (posted as an @mention + queue-flushed):",
   );
   if (!message) return;

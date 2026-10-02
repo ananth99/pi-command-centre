@@ -252,7 +252,7 @@ export function decideVerdict(
   }
 
   // ── 6b. "Request changes" reviews are the PLATFORM's trigger now (2026-09-30
-  //     capability: Ralph auto-detects CHANGES_REQUESTED and addresses it).
+  //     capability: the agent platform auto-detects CHANGES_REQUESTED and addresses it).
   //     If threads exist AND a changes-requested review landed AND the agent
   //     session is active, CC stays hands-off — WAIT, no render, no duplicate
   //     nudge. Backstop below: if the session is NOT active, threads still

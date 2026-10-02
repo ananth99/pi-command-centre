@@ -45,7 +45,7 @@ export interface WorkerCheckpoint {
    * for single-PR tickets this is just [evidence.pr]. evidence.pr itself is
    * ONLY the auto-close target (the PR whose merge retires the worker). */
   scan_prs?: string[];
-  ralph_session_id?: string;
+  agent_session_id?: string;
   session_status?: string;
   last_activity_at?: string;
   last_nudge_at?: string;
@@ -124,6 +124,6 @@ export const DEFAULT_CC_CONFIG: CCConfig = {
     nudge: { model: "openrouter/~z-ai/glm-flash-latest", thinking: "low" },
   },
   wakeups: { staleMinutes: 10, checkTimeoutMinutes: 15 },
-  agent: { name: "ralph" },
+  agent: { name: "the-agent" },
   budgets: { maxRenders: 15 },
 };
