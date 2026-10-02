@@ -53,6 +53,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 - [`zmx`](https://github.com/…) — terminal session persistence, used to run headless workers
 - [`linear`](https://github.com/schpet/linear-cli) CLI — authenticated, for reading/driving ticket-tracker agent sessions (optional; the worker infrastructure works without it for non-tracker tasks)
 - [`gh`](https://cli.github.com) CLI — authenticated with `Contents`, `Pull requests`, `Checks`, `Actions` read access
+- `PI_BIN` env var (optional) — set to `ralph` or `omp` if you run CC inside a pi-fork session; workers inherit that binary's auth and profiles
 - A terminal with Alt/Option-as-Meta (e.g. Ghostty `macos-option-as-alt = true`) for the hotkeys
 
 ## Install
