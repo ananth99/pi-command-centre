@@ -222,7 +222,24 @@ export async function reapStaleRenderSessions(): Promise<void> {
       if (!nameM || !createdM) continue;
       const name = nameM[1]!;
       if (!/-render-|-check-/.test(name)) continue;
-      if (line.includes("ended=")) continue; // already exited — not a leak
+      // "ended" means the pi worker exited — but the zmx process still holds
+      // a PTY for scrollback. Kill ended sessions older than 1 hour to
+      // reclaim ptmx devices (scrollback sacrificed after that window).
+      if (line.includes("ended=")) {
+        const endedMatch = line.match(/ended=(\d+)/);
+        if (endedMatch) {
+          const endedAgeMin = (now - Number(endedMatch[1]) * 1000) / 60_000;
+          if (endedAgeMin > 60) {
+            try {
+              await execFileAsync("zmx", ["kill", name], { timeout: 8_000 });
+            } catch {
+              // process already gone — try direct PID kill
+              try { process.kill(Number(line.match(/pid=(\d+)/)?.[1] ?? 0), "SIGKILL"); } catch {}
+            }
+          }
+        }
+        continue;
+      }
       const ageMin = (now - Number(createdM[1]) * 1000) / 60_000;
       if (ageMin < 20) continue;
       try {
