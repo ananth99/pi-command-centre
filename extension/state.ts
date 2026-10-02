@@ -19,7 +19,7 @@ const execFileAsync = promisify(execFile);
 /** Linear workspace slug for ticket deep-links. Override with CC_LINEAR_WORKSPACE. */
 
 /** Linear workspace slug for ticket deep-links. Override with CC_LINEAR_WORKSPACE. */
-export const LINEAR_WORKSPACE = process.env.CC_LINEAR_WORKSPACE ?? "bitgo";
+export const LINEAR_WORKSPACE = process.env.CC_LINEAR_WORKSPACE ?? "your-workspace";
 
 
 export function getPaths(cwd: string) {

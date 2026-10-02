@@ -40,7 +40,7 @@ if (mode === "fixtures") {
 }
 
 if (mode === "live") {
-  const dir = join(process.env.HOME!, "BitGo/.pi/command-centre/workers");
+  const dir = join(process.env.HOME!, ".pi/command-centre/workers");
   const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
   console.log("\nLIVE DRY-RUN — code verdict vs current checkpoint (read-only)\n");
   console.log(

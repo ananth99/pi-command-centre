@@ -1,10 +1,26 @@
 {
   "name": "pi-command-centre",
   "version": "0.1.0",
-  "description": "A pi extension: a supervisor cockpit for Linear coding agents — beacon + hotkey console, one background worker per ticket.",
-  "keywords": ["pi", "pi-coding-agent", "extension", "linear", "agents", "tui", "orchestration"],
+  "description": "A pi extension: a supervisor cockpit for Linear coding agents \u2014 beacon + hotkey console, one background worker per ticket.",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "linear",
+    "agents",
+    "tui",
+    "orchestration"
+  ],
   "license": "MIT",
   "author": "Ananth Madhavan",
-  "repository": { "type": "git", "url": "https://github.com/ananth99/pi-command-centre" },
-  "pi": { "extensions": ["./extension/index.ts", "./extension/linear-agent.ts"] }
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ananth99/pi-command-centre"
+  },
+  "pi": {
+    "extensions": [
+      "./extension/index.ts",
+      "./extension/linear-agent.ts"
+    ]
+  }
 }

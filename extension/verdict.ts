@@ -216,7 +216,7 @@ export function decideVerdict(
     return guarded(
       {
         verdict: "BRANCH_RENAME",
-        reason: `PR #${badBranch.num}: branch ${badBranch.headRefName} violates ananth/<ticket>-<desc>`,
+        reason: `PR #${badBranch.num}: branch ${badBranch.headRefName} violates <owner>/<ticket>-<desc>`,
         needsRender: true,
         writes: { rename_attempts: (checkpoint.rename_attempts ?? 0) + 1, ...baseWrites(true) },
       },

@@ -20,17 +20,17 @@ const NOW = Date.parse("2026-09-27T12:00:00Z");
 function pr(over: Partial<PrFact> = {}): PrFact {
   return {
     num: "964",
-    url: "https://github.com/BitGo/stablecoin-fungibility-service/pull/964",
+    url: "https://github.com/acme/example-service/pull/964",
     state: "OPEN",
     mergeStateStatus: "BLOCKED",
     reviewDecision: "REVIEW_REQUIRED",
-    headRefName: "ananth/SCAAS-11159-recover-settled-share-receipts",
+    headRefName: "owner/SCAAS-11159-recover-settled-share-receipts",
     branchConforming: true,
     commits: [
       {
         sha: "7eb8315a",
-        authorName: "Ananth Madhavan",
-        committerName: "bitgobot",
+        authorName: "Supervisor",
+        committerName: "example-bot",
         verified: true,
         coAuthoredByHuman: true,
       },
@@ -119,7 +119,7 @@ test("incident: unsigned commit outranks review — SIGN_SQUASH is absolute prio
   const f = facts({
     prs: [pr({
       commits: [
-        { sha: "a1", authorName: "Ralph", committerName: "bitgobot", verified: false, coAuthoredByHuman: true },
+        { sha: "a1", authorName: "Ralph", committerName: "example-bot", verified: false, coAuthoredByHuman: true },
       ],
       commitOk: false,
       threads: [{ id: "t1", kind: "review", lastCommentAt: "2026-09-27T10:00:00Z" }],
@@ -194,7 +194,7 @@ test("first run with no agent session delegates", () => {
 
 test("branch-conforming with slice suffix passes", () => {
   const f = facts({
-    prs: [pr({ headRefName: "ananth/SCAAS-11159-glue" })],
+    prs: [pr({ headRefName: "owner/SCAAS-11159-glue" })],
   });
   const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
   assert.notEqual(v.verdict, "BRANCH_RENAME");
@@ -233,8 +233,8 @@ test("render prompt: DELEGATE carries the conventions template", () => {
     eventsPath: "/tmp/ev.jsonl",
     delegateTemplate: tpl,
   });
-  assert.ok(p.includes("Co-authored-by: Ananth Madhavan"));
-  assert.ok(p.includes("ananth/SCAAS-11159"));
+  assert.ok(p.includes("Co-authored-by: <SUPERVISOR_NAME>"));
+  assert.ok(p.includes("<owner>/SCAAS-11159"));
   assert.ok(p.includes("MULTI-PR SIZING"));
 });
 
@@ -262,17 +262,17 @@ test("platform backstop: CHANGES_REQUESTED + dead session still nudges threads",
 
 test("revival: a new open PR on a done ticket is detected", () => {
   const search = [
-    { number: 964, url: "https://github.com/BitGo/x/pull/964" },
-    { number: 1042, url: "https://github.com/BitGo/x/pull/1042" },
+    { number: 964, url: "https://github.com/acme/x/pull/964" },
+    { number: 1042, url: "https://github.com/acme/x/pull/1042" },
   ];
   // worker tracked #964 (merged, retired); #1042 is new
-  const fresh = firstUntrackedPr(search, ["#964", "https://github.com/BitGo/x/pull/964"]);
+  const fresh = firstUntrackedPr(search, ["#964", "https://github.com/acme/x/pull/964"]);
   assert.equal(fresh?.number, "1042");
-  assert.equal(fresh?.url, "https://github.com/BitGo/x/pull/1042");
+  assert.equal(fresh?.url, "https://github.com/acme/x/pull/1042");
 });
 
 test("revival: nothing new → stays retired (no churn)", () => {
-  const search = [{ number: 964, url: "https://github.com/BitGo/x/pull/964" }];
+  const search = [{ number: 964, url: "https://github.com/acme/x/pull/964" }];
   const fresh = firstUntrackedPr(search, ["#964"]);
   assert.equal(fresh, null);
 });

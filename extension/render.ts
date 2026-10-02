@@ -9,10 +9,10 @@
 export const DELEGATE_TEMPLATE = (ticket: string, agentName: string): string =>
   `@${agentName} please implement ${ticket} end-to-end:
 - One-sentence objective from the ticket.
-- Branch naming: ananth/${ticket}-<2-3-word-desc> (stacked slices: ananth/${ticket}-<slice>).
+- Branch naming: <owner>/${ticket}-<2-3-word-desc> (stacked slices: <owner>/${ticket}-<slice>).
 - Draft PR. PR-DESC CONTRACT (acceptance criteria): body ≤ 10 lines — (1) what & why in 1-2 sentences; (2) a "Ticket: ${ticket}" line; (3) ≤ 6 one-line bullets of key changes (file/component level); (4) breaking changes/rollout notes only if they exist. FORBIDDEN in the body: test evidence or CI output, screenshots, restating the diff, design-essay prose, agent/workflow narration, process checklists, 'next steps' sections.
-- COMMIT ATTRIBUTION (non-negotiable): every commit MUST carry a "Co-authored-by: Ananth Madhavan <ananthmadhavan@bitgo.com>" trailer — the Humans In The Loop gate rejects AI commits without human attribution.
-- Single signed commit, commit header feat(scaas):.
+- COMMIT ATTRIBUTION (non-negotiable): every commit MUST carry a "Co-authored-by: <SUPERVISOR_NAME> <SUPERVISOR_EMAIL>" trailer — the Humans In The Loop gate rejects AI commits without human attribution. Fill from config or the ticket owner.
+- Single signed commit, commit header feat(<scope>):.
 - MULTI-PR SIZING: estimate changed lines first (tests ≈ 50-60% of a slice). If > ~500 lines, mandate a linear STACK of 2-3 PRs split on file boundaries, each ≤ ~500 lines, stacked branches, one signed commit each. Record ALL PR numbers on the ticket; the supervisor will track them.`;
 
 export interface RenderPromptParams {
@@ -49,7 +49,7 @@ export function buildRenderPrompt(p: RenderPromptParams): string {
     "## Job 1 — compose ONE comment to the agent",
     `@mention "${p.agentName}" explicitly (unmentioned comments are never picked up). Be specific from the facts: PR numbers, SHAs, thread URLs, exact failures. Shapes by verdict:`,
     "  SIGN_SQUASH → name the offending commit + its verified state; squash to exactly one commit; sign via git sign-pr before push; note that re-signing rewrites the head (reviews dismiss).",
-    "  ATTRIBUTION_FIX → name the commit and the missing trailer (Co-authored-by: Ananth Madhavan <ananthmadhavan@bitgo.com>); the Humans In The Loop gate rejects AI commits without human attribution.",
+    "  ATTRIBUTION_FIX → name the commit and the missing Co-authored-by supervisor trailer; the Humans In The Loop gate rejects AI commits without human attribution.",
     "  NUDGE_THREADS → instruct the agent to REPLY INLINE on each review thread URL from the facts (one reply per thread, on the thread itself). NEVER summarize answers in a top-level PR conversation comment. Never acknowledge bot comments; delete any such comments you already made.",
     "  REBASE → rebase onto master, retarget the PR base if stacked, single commit, re-sign.",
     "  BRANCH_RENAME → use GitHub's branch rename API (gh api repos/<owner>/<repo>/branches/<old>/rename -f new_name=...), NEVER push-new-and-delete-old (that auto-closes PRs).",

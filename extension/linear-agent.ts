@@ -1,7 +1,7 @@
 /**
  * Linear Agent extension
  *
- * Lets pi read and drive Linear agent sessions (e.g. Ralph / BitGo Internal
+ * Lets pi read and drive Linear agent sessions (e.g. a Linear agent (e.g. Ralph, or
  * Agent) using ONLY the personal API key that the `linear` CLI already has.
  *
  * Key insight: you don't need the forbidden `agentActivityCreatePrompt` OAuth
@@ -120,12 +120,12 @@ export default function linearAgentExtension(pi: ExtensionAPI) {
 		promptSnippet: "Send a prompt to a Linear agent via an issue comment",
 		promptGuidelines: [
 			"Use only when the user explicitly wants to instruct a Linear agent.",
-			"Ralph and BitGo Internal Agent are two SEPARATE agents. Always explicitly @mention the correct one by name in the comment body (e.g. '@ralph ...' or '@BitGo Internal Agent ...') -- do not assume a plain comment will be picked up, and do not default to @ralph unless the user asked for Ralph specifically.",
+			"Named agents are separate entities — check which one owns a ticket before prompting. Always explicitly @mention the correct one by name in the comment body (e.g. '@agent-a' or '@agent-b') -- do not assume a plain comment will be picked up, and do not default to @ralph unless the user asked for Ralph specifically.",
 			"If unsure which agent owns a given issue, check linear_agent_sessions / linear_agent_activity first (the session's creator/sourceComment.user.name shows which agent has been responding) before prompting.",
 		],
 		parameters: Type.Object({
 			issueId: Type.String({ description: "Issue identifier (e.g. SCAAS-10909)" }),
-			body: Type.String({ description: "Comment/prompt body. Must explicitly @mention the intended agent by name (e.g. '@ralph' or '@BitGo Internal Agent') -- Ralph and BitGo Internal Agent are separate agents and won't necessarily pick up an unmentioned comment." }),
+			body: Type.String({ description: "Comment/prompt body. Must explicitly @mention the intended agent by name (e.g. '@your-agent' or another agent's name) -- agents only pick up comments that name them." }),
 			parentCommentId: Type.Optional(Type.String({ description: "Reply under this comment id (optional)" })),
 		}),
 		async execute(_id, params) {

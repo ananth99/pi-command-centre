@@ -44,7 +44,7 @@ export interface CommitFact {
   committerName: string;
   /** REST-verified signature state — the ONLY trusted source. */
   verified: boolean;
-  /** Co-authored-by trailer naming the human supervisor present in message. */
+  /** Co-authored-by trailer present in the commit message. */
   coAuthoredByHuman: boolean;
 }
 
@@ -241,7 +241,7 @@ async function gatherPrFacts(
           authorName: arr?.[0] ?? "",
           committerName: arr?.[1] ?? "",
           verified: arr?.[2] === true,
-          coAuthoredByHuman: /Co-authored-by:\s*Ananth Madhavan/i.test(arr?.[3] ?? ""),
+          coAuthoredByHuman: /Co-authored-by:/i.test(arr?.[3] ?? ""),
         });
       } catch {
         commits.push({ sha, authorName: "", committerName: "", verified: false, coAuthoredByHuman: false });
@@ -287,10 +287,10 @@ async function gatherPrFacts(
   }
 }
 
-/** ananth/<TICKET>-<slice-or-desc> convention. */
+/** <owner>/<TICKET>-<slice-or-desc> branch convention (owner from config). */
 export function branchConforming(headRefName: string | null, ticket: string): boolean {
   if (!headRefName || !ticket) return false;
-  return new RegExp(`^ananth/${ticket.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}(-[a-z0-9-]+)?$`).test(headRefName);
+  return new RegExp(`^${process.env.CC_BRANCH_OWNER ?? "owner"}/${ticket.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}(-[a-z0-9-]+)?$`).test(headRefName);
 }
 
 /**
