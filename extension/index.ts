@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { execFile } from "node:child_process";
+import { spawn as childSpawn } from "node:child_process";
 import { promisify } from "node:util";
 import { gatherFacts, firstUntrackedPr, discoverOpenPrsForTicket } from "./facts";
 import { decideVerdict } from "./verdict";
@@ -889,19 +890,23 @@ async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
         : undefined,
     });
     try {
-      await spawnWorkerPi({
+      const rpc = await spawnRenderRpc({
         workerId: `${w.worker_id}-render-${now.toString(36)}`,
         cwd: w.evidence?.repo ?? ctx.cwd,
-        stateCwd: ctx.cwd,
         model: isDelegate ? config.models.check.model : config.models.nudge.model,
         thinking: isDelegate ? config.models.check.thinking : config.models.nudge.thinking,
         prompt,
+        timeoutMs: 5 * 60_000,
       });
       await appendEvent(ctx.cwd, {
         type: "render_worker_spawned",
         worker_id: w.worker_id,
         verdict: verdict.verdict,
         tier: isDelegate ? "check" : "nudge",
+        transport: "rpc",
+        settled: rpc.settled,
+        timedOut: rpc.timedOut,
+        lastEvent: rpc.lastEvent,
       });
     } catch (error) {
       await appendEvent(ctx.cwd, {
@@ -946,6 +951,101 @@ async function reapStaleRenderSessions(): Promise<void> {
   } catch {
     // zmx unavailable — skip this window
   }
+}
+
+interface RpcRenderResult {
+  settled: boolean;
+  timedOut: boolean;
+  exitCode: number | null;
+  lastEvent: string;
+}
+
+/**
+ * RPC render spawn (CC v4): headless `pi --mode rpc` child — no PTY, no
+ * zmx, no typed commands. Prompt in, JSONL events out; killed by PID on
+ * timeout. Kills the entire PTY scar class (1KB truncation, Enter-swallow,
+ * reaper) for renders.
+ */
+function spawnRenderRpc(opts: {
+  workerId: string;
+  cwd: string;
+  model: string;
+  thinking: string;
+  prompt: string;
+  timeoutMs: number;
+}): Promise<RpcRenderResult> {
+  return new Promise((resolve) => {
+    const args = [
+      "--mode",
+      "rpc",
+      "--no-session",
+      "--name",
+      opts.workerId,
+      "--model",
+      opts.model,
+      "--thinking",
+      opts.thinking,
+      "--tools",
+      "codemode,read,bash,edit,write",
+    ];
+    const child = childSpawn("pi", args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
+    let buffer = "";
+    let settled = false;
+    let done = false;
+    let lastEvent = "";
+    const finish = (result: RpcRenderResult) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        child.stdin.end();
+      } catch {
+        // already closed
+      }
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already dead
+      }
+      resolve(result);
+    };
+    const timer = setTimeout(
+      () => finish({ settled, timedOut: true, exitCode: child.exitCode, lastEvent: "timeout" }),
+      opts.timeoutMs,
+    );
+    // Binary-split on LF only (never readline: U+2028/2029 are valid in JSON).
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      let idx: number;
+      while ((idx = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, idx).replace(/\r$/, "");
+        buffer = buffer.slice(idx + 1);
+        if (!line.trim()) continue;
+        let rec: { type?: string } | null = null;
+        try {
+          rec = JSON.parse(line) as { type?: string };
+        } catch {
+          continue;
+        }
+        lastEvent = String(rec.type ?? "");
+        if (rec.type === "agent_settled") {
+          settled = true;
+          finish({ settled: true, timedOut: false, exitCode: null, lastEvent });
+        }
+      }
+    });
+    child.on("error", (e: Error) =>
+      finish({ settled, timedOut: false, exitCode: null, lastEvent: `spawn_error: ${e.message}` }),
+    );
+    child.on("close", (code: number | null) =>
+      finish({ settled, timedOut: false, exitCode: code, lastEvent: lastEvent || "exit" }),
+    );
+    try {
+      child.stdin.write(JSON.stringify({ id: "cc-render", type: "prompt", message: opts.prompt }) + "\n");
+    } catch (e) {
+      finish({ settled: false, timedOut: false, exitCode: null, lastEvent: `stdin_error: ${e}` });
+    }
+  });
 }
 
 async function maybeSpawnCheckWorkers(ctx: { cwd: string }): Promise<void> {
@@ -1935,6 +2035,57 @@ function renderBoxTable(
 }
 
 export default function commandCentreExtension(pi: ExtensionAPI) {
+  // cc_status: structured status tool for the session model (and codemode
+  // scripts) — the amnesiac-LLM-spelunking-the-source class dies here.
+  try {
+    pi.registerTool({
+      name: "cc_status",
+      label: "Command Centre Status",
+      description:
+        "Live Command Centre worker status: counts by state + per-worker ticket/PR/verdict/age. Read-only; use before making claims about CC workers.",
+      exposure: "direct",
+      parameters: {},
+      outputSchema: {
+        type: "object",
+        properties: {
+          counts: { type: "object", description: "workers by status" },
+          workers: {
+            type: "array",
+            description: "per-worker snapshot, newest first",
+            items: { type: "object" },
+          },
+        },
+        required: ["counts", "workers"],
+      },
+      async execute(_toolCallId: string, _params: unknown, _signal: unknown, _onUpdate: unknown, ctx: { cwd: string }) {
+        const checkpoints = await readWorkerCheckpoints(ctx.cwd);
+        const counts: Record<string, number> = {};
+        for (const w of checkpoints) counts[w.status] = (counts[w.status] ?? 0) + 1;
+        const workers = checkpoints
+          .slice()
+          .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""))
+          .map((w) => ({
+            worker: w.worker_id,
+            ticket: w.linear_issue_id ?? null,
+            pr: w.expected_pr ?? null,
+            status: w.status,
+            action: w.action ?? null,
+            reply_class: w.reply_class ?? null,
+            updated: w.updated_at,
+            summary: (w.summary ?? "").slice(0, 120),
+          }));
+        const data = { counts, workers };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(data, null, 1) }],
+          structuredContent: data,
+          details: {},
+        };
+      },
+    });
+  } catch (error) {
+    // registration failure must never take the whole extension down
+    console.error("[cc] cc_status registration failed:", error);
+  }
   pi.registerShortcut("alt+c", {
     description: "Open Command Centre console (scrollable, no truncation)",
     handler: async (ctx) => {
