@@ -66,6 +66,7 @@ export interface VerdictResult {
 }
 
 const NUDE_LOOP_GUARD_MS = 30 * 60_000;
+const START_GRACE_MS = 15 * 60_000;
 const STALL_STREAK = 5;
 
 function recentNudgeMs(checkpoint: VerdictCheckpointShape, now: number): number | null {
@@ -183,6 +184,7 @@ export function decideVerdict(
         },
         checkpoint,
         now,
+        facts,
       );
     }
     // Single, verified, but missing human co-authorship (HITL attribution).
@@ -195,6 +197,7 @@ export function decideVerdict(
       },
       checkpoint,
       now,
+      facts,
     );
   }
 
@@ -222,6 +225,7 @@ export function decideVerdict(
       },
       checkpoint,
       now,
+      facts,
     );
   }
 
@@ -237,6 +241,7 @@ export function decideVerdict(
         },
         checkpoint,
         now,
+        facts,
       );
     }
     return guarded(
@@ -248,6 +253,7 @@ export function decideVerdict(
       },
       checkpoint,
       now,
+      facts,
     );
   }
 
@@ -282,6 +288,7 @@ export function decideVerdict(
       },
       checkpoint,
       now,
+      facts,
     );
   }
 
@@ -296,6 +303,7 @@ export function decideVerdict(
       },
       checkpoint,
       now,
+      facts,
     );
   }
 
@@ -368,10 +376,26 @@ function guarded(
   result: VerdictResult,
   checkpoint: VerdictCheckpointShape,
   now: number,
+  facts: WorkerFacts,
 ): VerdictResult {
   if (result.verdict !== (checkpoint.action as VerdictName)) return result;
   const since = recentNudgeMs(checkpoint, now);
   if (since === null || since > NUDE_LOOP_GUARD_MS) return result;
+  // Give the agent time: platform commands (/fix-ci, nudges) queue before the
+  // agent starts. Only a worker that has acted since the nudge and is idle
+  // again with the problem unchanged is genuinely stuck.
+  const nudgeAt = Date.parse(checkpoint.last_nudge_at ?? "");
+  const actedAt = Date.parse(facts.lastActivityAt ?? "");
+  const agentBusy = facts.sessionStatus === "active" || facts.sessionStatus === "pending";
+  const notStartedYet = (Number.isNaN(actedAt) || actedAt <= nudgeAt) && since <= START_GRACE_MS;
+  if (agentBusy || notStartedYet) {
+    return {
+      verdict: "WAIT",
+      reason: `${result.verdict} sent ${Math.round(since / 60000)}m ago \u2014 ${agentBusy ? "agent is working on it" : "agent hasn't started yet"}`,
+      needsRender: false,
+      writes: { wait_streak: (checkpoint.wait_streak ?? 0) + 1 },
+    };
+  }
   return {
     verdict: "STALLED",
     reason: `loop guard: ${result.verdict} already sent ${Math.round(since / 60000)}m ago with no state change`,

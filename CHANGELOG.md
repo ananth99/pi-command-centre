@@ -10,6 +10,7 @@
 - **AWAITING REVIEW** section for parked workers; today's landed / merged / replies line; one-line beacon with effort breakdown; a 🆕 marker in the beacon (5 min) on *new* needs-you items — no chat-log spam.
 
 ### Fixed
+- Loop guard escalated to STALLED 10 minutes after a `/fix-ci` even though the platform command was still queued (SCAAS-11190). Within the window the verdict is now WAIT while the agent is active or hasn't started (15 min grace); STALLED only if the agent acted, went idle, and the problem is unchanged — or stayed silent past the grace.
 - Colors now come from pi's active theme (`theme.fg` semantic tokens) instead of hardcoded ANSI, so light/dark and custom themes work.
 - Console overlay did not scroll (ScrollView had no viewport height) — replaced with explicit scrolling: ↑↓/j/k, PgUp/PgDn/space, g/G, mouse wheel, scrollbar and position in the header.
 - Console is wider (98% of terminal), tables use 2-space padding, row separators, and 3–4 column layouts so the text column gets the room. Cells support `\n`.

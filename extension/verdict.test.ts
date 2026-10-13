@@ -86,21 +86,43 @@ test("incident: parked on a broken PR (11159 arse-sitting) — landing + unsigne
   assert.equal(v.writes.status, "working");
 });
 
-test("incident: 14-comment spam (11150) — repeated verdict within 30min must escalate, not re-send", () => {
+const spamCase = (minsAgo: number, sess: string, activity: string) => {
   const f = facts({
     prs: [pr({ headRefName: "SCAAS-11150-order-read", branchConforming: false })],
-    sessionStatus: "stale",
+    sessionStatus: sess,
+    lastActivityAt: activity,
     ciState: "unknown",
   });
   const checkpoint = cp({
     action: "BRANCH_RENAME",
-    last_nudge_at: new Date(NOW - 10 * 60_000).toISOString(),
+    last_nudge_at: new Date(NOW - minsAgo * 60_000).toISOString(),
     rename_attempts: 1,
   });
-  const v = decideVerdict(f, checkpoint, NOW);
+  return decideVerdict(f, checkpoint, NOW);
+};
+
+test("incident: 14-comment spam (11150) — agent silent past the grace window must escalate, not re-send", () => {
+  const v = spamCase(20, "stale", "2026-09-27T11:40:00Z");
   assert.equal(v.verdict, "STALLED");
   assert.equal(v.needsRender, false, "must NOT render another nudge");
   assert.ok(v.needsYou, "must surface to the human");
+});
+
+test("incident: 11190 false stall — platform command still queued (<15m, agent not started) must WAIT", () => {
+  const v = spamCase(10, "complete", "2026-09-27T11:40:00Z");
+  assert.equal(v.verdict, "WAIT");
+  assert.equal(v.needsRender, false);
+  assert.equal(v.needsYou, undefined);
+});
+
+test("agent actively working on the nudge is never loop-guarded", () => {
+  const v = spamCase(25, "active", new Date(NOW - 60_000).toISOString());
+  assert.equal(v.verdict, "WAIT");
+});
+
+test("agent acted since the nudge, is idle again, problem unchanged → STALLED", () => {
+  const v = spamCase(10, "complete", new Date(NOW - 2 * 60_000).toISOString());
+  assert.equal(v.verdict, "STALLED");
 });
 
 test("incident: rename exhausted — after 2 attempts escalate ASK instead of renaming forever", () => {
