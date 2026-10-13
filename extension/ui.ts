@@ -11,7 +11,7 @@
  * box-table renderer is ours.
  */
 
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
   visibleWidth,
@@ -163,15 +163,27 @@ export async function getWorkerLiveLine(workerId: string): Promise<string | null
 
 const FIX_VERDICTS = new Set(["FIX_CI", "REBASE", "NUDGE_THREADS", "NUDGE_SPECIFIC", "SIGN_SQUASH", "ATTRIBUTION_FIX", "BRANCH_RENAME", "DELEGATE"]);
 
-const SGR = (code: string) => (s: string) => `\u001b[${code}m${s}\u001b[0m`;
-export const tone = {
-  red: SGR("38;5;203"),
-  amber: SGR("38;5;214"),
-  green: SGR("38;5;114"),
-  blue: SGR("38;5;75"),
-  dim: SGR("38;5;245"),
-  bold: SGR("1"),
+type Paint = (s: string) => string;
+const plain: Paint = (s) => s;
+
+/** Semantic colors, bound to pi's active theme (applyTheme) so light/dark and custom themes just work. */
+export const tone: { red: Paint; amber: Paint; green: Paint; blue: Paint; dim: Paint; bold: Paint } = {
+  red: plain,
+  amber: plain,
+  green: plain,
+  blue: plain,
+  dim: plain,
+  bold: plain,
 };
+
+export function applyTheme(theme: Theme): void {
+  tone.red = (s) => theme.fg("error", s);
+  tone.amber = (s) => theme.fg("warning", s);
+  tone.green = (s) => theme.fg("success", s);
+  tone.blue = (s) => theme.fg("accent", s);
+  tone.dim = (s) => theme.fg("muted", s);
+  tone.bold = (s) => theme.bold(s);
+}
 
 const WHY_STYLE: Record<Why, { glyph: string; color: (s: string) => string }> = {
   QUESTION: { glyph: "\u270B", color: tone.amber },
@@ -447,6 +459,7 @@ export async function renderDashboardWidget(ctx: ExtensionCommandContext) {
     ctx.ui.setWidget("command-centre-dashboard", undefined);
     return;
   }
+  applyTheme(ctx.ui.theme);
   const { board } = await loadBoard(ctx.cwd);
   const keys = new Set(board.needsYou.map((i) => `${i.worker}:${i.why}`));
   const seen = seenNeedsYou.get(key);
@@ -464,6 +477,7 @@ export async function renderDashboardWidget(ctx: ExtensionCommandContext) {
 
 
 export async function openConsole(ctx: ExtensionCommandContext) {
+  applyTheme(ctx.ui.theme);
   await buildConsoleLines(ctx.cwd, 100); // populates consoleSnapCache
   const snap = consoleSnapCache.get(ctx.cwd);
   if (!snap) return;
@@ -507,7 +521,12 @@ export class StaticContent implements Component {
   invalidate(): void {}
 }
 
-/** Bordered overlay pane with explicit scrolling (keys, PgUp/PgDn, mouse wheel). */
+/**
+ * Bordered overlay pane with explicit scrolling (keys, PgUp/PgDn, wheel).
+ * pi-tui's ScrollView is sized by the layout pass (VStack / fullscreen root);
+ * overlays are rendered as plain render(width) and clipped to maxHeight, so a
+ * ScrollView never gets a viewport there. Scrolling therefore lives here.
+ */
 export class OverlayPane implements Component {
   private title: string;
   private content: Component;
