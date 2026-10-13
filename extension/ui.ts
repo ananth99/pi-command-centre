@@ -23,8 +23,26 @@ import {
 } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { WorkerCheckpoint, WorkerStatus } from "./types";
-import { appendEvent, ensureState, getPaths, liveAgentStatus, readJson, readWorkerCheckpoints } from "./state";
+import { readFile } from "node:fs/promises";
+import type { WorkerStatus } from "./types";
+import {
+  deriveBoard,
+  fmtDue,
+  ageOf,
+  oneLine,
+  prChain,
+  prsOf,
+  shortProject,
+  todayStats,
+  PRIORITY_LABEL,
+  type AssignedTicket,
+  type Board,
+  type BoardWorker,
+  type TodayStats,
+  type Why,
+} from "./board";
+import { readAssigned } from "./assigned";
+import { appendEvent, ensureState, getPaths, liveAgentStatus, normalizePrRef, readJson, readWorkerCheckpoints } from "./state";
 
 const execFileAsync = promisify(execFile);
 
@@ -144,198 +162,300 @@ export async function getWorkerLiveLine(workerId: string): Promise<string | null
 
 /** Tick-level agent-session probe (no LLM): worker_id -> live Linear session status. */
 
-export async function buildConsoleLines(cwd: string, width = 100): Promise<string[]> {
-  const checkpoints = await readWorkerCheckpoints(cwd);
-  const paths = await ensureState(cwd);
-  const queue = await readJson<QueueState>(paths.queueFile, { items: [] });
-  const openQueue = queue.items
-    .filter((item) => item.status === "open")
-    .sort((a, b) => a.priority - b.priority || (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
+const FIX_VERDICTS = new Set(["FIX_CI", "REBASE", "NUDGE_THREADS", "NUDGE_SPECIFIC", "SIGN_SQUASH", "ATTRIBUTION_FIX", "BRANCH_RENAME", "DELEGATE"]);
 
-  const needsYouFromWorkers = checkpoints
-    .filter((w) => w.status === "blocked" || w.status === "awaiting_approval")
-    .map((w) => ({
-      priority: w.status === "awaiting_approval" ? "P2" : "P3",
-      worker: w.worker_id,
-      ticket: w.linear_issue_id ?? "-",
-      message: String(w.blocker || w.proposed_action || w.summary || w.objective),
-    }));
+const SGR = (code: string) => (s: string) => `\u001b[${code}m${s}\u001b[0m`;
+export const tone = {
+  red: SGR("38;5;203"),
+  amber: SGR("38;5;214"),
+  green: SGR("38;5;114"),
+  blue: SGR("38;5;75"),
+  dim: SGR("38;5;245"),
+  bold: SGR("1"),
+};
 
-  const needsYouFromQueue = openQueue
-    .filter((item) => item.priority <= 2)
-    .map((item) => ({
-      priority: `P${item.priority}`,
-      worker: item.id,
-      ticket: "-",
-      message: item.title,
-    }));
+const WHY_STYLE: Record<Why, { glyph: string; color: (s: string) => string }> = {
+  QUESTION: { glyph: "\u270B", color: tone.amber },
+  BLOCKED: { glyph: "\u26D4", color: tone.red },
+  STALLED: { glyph: "\u23F8", color: tone.amber },
+  APPROVE: { glyph: "\u2705", color: tone.green },
+};
 
-  const workingAll = checkpoints.filter(
-    (w) => w.status === "working" || w.status === "landing",
-  );
-  const needsYouFromAgents = workingAll.flatMap((w) => {
-    const s = liveAgentStatus.get(w.worker_id);
-    // Grace window: you just replied — don't re-raise the P1 while the agent
-    // picks the answer up (Linear keeps the session 'awaitingInput' for a bit).
-    const repliedRecently =
-      w.last_nudge_at && Date.now() - new Date(w.last_nudge_at).getTime() < 5 * 60_000;
-    return s && /awaiting/i.test(s.status) && !repliedRecently
-      ? [
-          {
-            priority: "P1",
-            worker: w.worker_id,
-            ticket: w.linear_issue_id ?? "-",
-            message: `${w.agent_name ?? "agent"} is AWAITING YOUR INPUT — read the latest ticket comment, answer with /cc reply ${w.worker_id} <answer>`,
-          },
-        ]
-      : [];
+function ageTone(text: string, hours: number) {
+  return hours >= 48 ? tone.red(text) : hours >= 24 ? tone.amber(text) : text;
+}
+
+async function readTodayStats(cwd: string): Promise<TodayStats> {
+  try {
+    const paths = await ensureState(cwd);
+    const raw = await readFile(paths.eventsFile, "utf8");
+    const lines = raw.split("\n").slice(-4000);
+    const events = lines.flatMap((l) => {
+      try {
+        return [JSON.parse(l) as { ts?: string; type?: string }];
+      } catch {
+        return [];
+      }
+    });
+    return todayStats(events, Date.now());
+  } catch {
+    return { landed: 0, merged: 0, replies: 0 };
+  }
+}
+
+async function loadBoard(cwd: string) {
+  const [checkpoints, assigned] = await Promise.all([readWorkerCheckpoints(cwd), readAssigned(cwd)]);
+  const board = deriveBoard({
+    workers: checkpoints as unknown as BoardWorker[],
+    live: liveAgentStatus as unknown as Map<string, { status: string; activityAt?: string }>,
+    assigned,
+    now: Date.now(),
   });
-  const needsYou = [...needsYouFromAgents, ...needsYouFromQueue, ...needsYouFromWorkers].slice(0, 8);
-  const freshCutoff = Date.now() - 48 * 3600 * 1000;
-  const fresh = workingAll.filter((w) => new Date(w.updated_at ?? 0).getTime() >= freshCutoff);
-  const inFlight = fresh.slice(0, 6);
-  const moreInFlight = fresh.length - inFlight.length;
-  const dormantCount = workingAll.length - fresh.length;
-  const nowQueue = openQueue.slice(0, 3);
+  return { checkpoints, assigned, board };
+}
 
-  // ── snapshot rows (async), formatted synchronously by formatConsole ──
+export interface ConsoleSnap {
+  updated: string;
+  now: number;
+  board: Board;
+  stats: TodayStats;
+  ifRows: string[][];
+  rvRows: string[][];
+  assignedById: Map<string, AssignedTicket>;
+}
+
+export const consoleSnapCache = new Map<string, ConsoleSnap>();
+
+export async function buildConsoleLines(cwd: string, width = 100): Promise<string[]> {
+  const { checkpoints, assigned, board } = await loadBoard(cwd);
+  const now = Date.now();
+  const assignedById = new Map(assigned.map((t) => [t.id, t]));
+  const byWorker = new Map(checkpoints.map((w) => [w.worker_id, w]));
+
+  const meta = (ticket: string | undefined) => {
+    const t = ticket ? assignedById.get(ticket) : undefined;
+    const due = fmtDue(t?.dueDate ?? null, now);
+    const dueText = due.level === "overdue" ? tone.red(due.text) : due.level === "soon" ? tone.amber(due.text) : due.text;
+    return { project: shortProject(t?.project), due: dueText, est: t?.estimate != null ? String(t.estimate) : "-" };
+  };
+
   const ifRows: string[][] = [];
-  for (const w of inFlight) {
-    const ciText =
-      w.ci_state === "green" ? "pass" : w.ci_state === "red" ? "FAIL" : w.ci_state === "running" ? "run" : "-";
+  for (const w of board.inFlight) {
+    const full = byWorker.get(w.worker_id)!;
     const live = liveAgentStatus.get(w.worker_id);
-    const sess = live?.status ?? w.session_status;
-    const sessAt = live?.activityAt ?? w.last_activity_at;
-    const updatedMs = Date.now() - new Date(w.updated_at ?? 0).getTime();
+    const sess = live?.status ?? full.session_status;
+    const sessAt = live?.activityAt ?? full.last_activity_at;
+    const updatedMs = now - new Date(full.updated_at ?? 0).getTime();
     const narrating = !Number.isNaN(updatedMs) && updatedMs < 3 * 60_000;
-    const now = narrating
-      ? w.summary || w.objective
-      : (await getWorkerLiveLine(w.worker_id)) || w.summary || w.objective;
-    const meta =
-      `${w.action ? `[${w.action}] ` : ""}${sess ? `${sess}(${timeAgo(sessAt)}) ` : ""}` +
-      `${w.unresolved_thread_count ? `\u{1F4AC}${w.unresolved_thread_count} ` : ""}\u00b7 ${now}`;
+    const nowText = narrating
+      ? full.summary || full.objective
+      : (await getWorkerLiveLine(w.worker_id)) || full.summary || full.objective;
+    const ci = full.ci_state;
+    const glyph = ci === "red" ? tone.red("\u2716") : ci === "running" ? tone.amber("\u25D0") : tone.blue("\u25CF");
+    const verdict = full.action && FIX_VERDICTS.has(full.action) ? `${full.action} ` : "";
+    const threads = full.unresolved_thread_count ? `\u{1F4AC}${full.unresolved_thread_count} ` : "";
+    const sessText = sess ? tone.dim(`${sess}(${timeAgo(sessAt)}) `) : "";
+    const m = meta(full.linear_issue_id);
+    const ciText = ci === "green" ? tone.green("pass") : ci === "red" ? tone.red("FAIL") : ci === "running" ? tone.amber("run") : "-";
     ifRows.push([
-      w.worker_id,
-      w.linear_issue_id ?? "-",
-      w.evidence?.pr ? normalizePrRef(w.evidence.pr) : "-",
+      full.linear_issue_id ?? full.worker_id,
+      m.project,
+      prChain(prsOf(full), full.evidence?.pr),
       ciText,
-      meta,
+      m.due,
+      m.est,
+      `${glyph} ${verdict}${threads}${sessText}\u00b7 ${nowText}`,
     ]);
   }
+
+  const rvRows = board.awaitingReview.map((w) => {
+    const full = byWorker.get(w.worker_id)!;
+    const m = meta(full.linear_issue_id);
+    const age = ageOf(full.updated_at, now);
+    return [
+      full.linear_issue_id ?? full.worker_id,
+      m.project,
+      prChain(prsOf(full), full.evidence?.pr),
+      ageTone(age.text, age.hours),
+      oneLine(full.summary || full.objective || "awaiting human review", 160),
+    ];
+  });
+
   const snap: ConsoleSnap = {
     updated: new Date().toLocaleTimeString(),
-    counts: { needsYou: needsYou.length, queue: openQueue.length, inFlight: inFlight.length },
-    nyRows: needsYou.map((it) => [it.priority, it.worker, it.ticket, it.message]),
+    now,
+    board,
+    stats: await readTodayStats(cwd),
     ifRows,
-    nowRows: nowQueue.map((i) => [`P${i.priority}`, i.title]),
-    moreInFlight,
-    dormant: dormantCount,
+    rvRows,
+    assignedById,
   };
   consoleSnapCache.set(cwd, snap);
   return formatConsole(snap, width);
 }
 
-
-export interface ConsoleSnap {
-  updated: string;
-  counts: { needsYou: number; queue: number; inFlight: number };
-  nyRows: string[][];
-  ifRows: string[][];
-  nowRows: string[][];
-  moreInFlight: number;
-  dormant: number;
+function box(title: string, body: string[], width: number, color: (s: string) => string): string[] {
+  const inner = Math.max(10, width - 4);
+  const head = ` ${title} `;
+  const top = color(`\u250c\u2500${head}${"\u2500".repeat(Math.max(0, inner - visibleWidth(head)))}\u2500\u2510`);
+  const rows = body.flatMap((b) => wrapTextWithAnsi(b, inner)).map((l) => {
+    return `${color("\u2502")} ${l}${" ".repeat(Math.max(0, inner - visibleWidth(l)))} ${color("\u2502")}`;
+  });
+  return [top, ...rows, color(`\u2514${"\u2500".repeat(inner + 2)}\u2518`)];
 }
-
-export const consoleSnapCache = new Map<string, ConsoleSnap>();
-
-/** Sync formatter: renders a snapshot into box tables sized to `width`. */
 
 /** Sync formatter: renders a snapshot into box tables sized to `width`. */
 export function formatConsole(s: ConsoleSnap, width: number): string[] {
+  const { board: b } = s;
   const out: string[] = [];
   out.push(
-    `Updated ${s.updated} \u00b7 Needs You ${s.counts.needsYou} \u00b7 Queue ${s.counts.queue} \u00b7 In Flight ${s.counts.inFlight}`,
+    `${tone.dim(`Updated ${s.updated}`)} \u00b7 ${tone.bold(`${b.needsYou.length} need you`)} \u00b7 ${b.inFlight.length} in flight \u00b7 ${b.awaitingReview.length} in review \u00b7 ${b.queue.length} queued`,
+  );
+  out.push(
+    tone.dim(`Today  \u2713 ${s.stats.landed} landed \u00b7 \u21C4 ${s.stats.merged} merged \u00b7 \u270E ${s.stats.replies} replies`),
   );
   out.push("");
-  out.push("NEEDS YOU");
-  if (!s.nyRows.length) out.push("  \u2713 none");
-  else
+
+  const top = b.needsYou[0];
+  if (top) {
+    const st = WHY_STYLE[top.why];
+    const age = ageOf(top.since, s.now);
+    const head = `${st.glyph} ${top.why} \u00b7 ${top.ticket}${top.prs.length ? ` \u00b7 ${prChain(top.prs, top.anchor)}` : ""} \u00b7 ${age.text} \u00b7 ${top.effort}`;
+    out.push(...box("NEXT UP", [tone.bold(head), top.text, tone.dim(`\u2192 ${top.doIt}`)], width, st.color));
+  } else {
     out.push(
-      ...renderBoxTable(
+      ...box(
+        "ALL CLEAR",
+        [`\u2713 Nothing needs you. ${b.inFlight.length} in flight, ${b.awaitingReview.length} waiting on review.`],
         width,
-        [
-          { title: "P", min: 2 },
-          { title: "WORKER", min: 13 },
-          { title: "TICKET", min: 11 },
-          { title: "WHAT YOU NEED TO DO", min: 20, flex: 1 },
-        ],
-        s.nyRows,
+        tone.green,
       ),
     );
+  }
   out.push("");
-  out.push("IN FLIGHT");
-  if (!s.ifRows.length) out.push("  \u2713 none");
+
+  if (b.needsYou.length) {
+    const quick = b.needsYou.filter((n) => n.effortRank === 0).length;
+    out.push(tone.bold(`NEEDS YOU`) + tone.dim(quick ? `  (${quick} quick win${quick > 1 ? "s" : ""})` : ""));
+    out.push(
+      ...renderBoxTable(
+        width,
+        [
+          { title: "WHY", min: 10 },
+          { title: "TICKET", min: 11 },
+          { title: "PR", min: 18 },
+          { title: "AGE", min: 4 },
+          { title: "EFFORT", min: 7 },
+          { title: "WHAT \u2192 DO", min: 24, flex: 1 },
+        ],
+        b.needsYou.map((n) => {
+          const st = WHY_STYLE[n.why];
+          const age = ageOf(n.since, s.now);
+          return [
+            st.color(`${st.glyph} ${n.why}`),
+            n.ticket,
+            prChain(n.prs, n.anchor),
+            ageTone(age.text, age.hours),
+            n.effort,
+            `${n.text} ${tone.dim(`\u2192 ${n.doIt}`)}`,
+          ];
+        }),
+      ),
+    );
+    out.push("");
+  }
+
+  if (s.rvRows.length) {
+    out.push(tone.bold("AWAITING REVIEW") + tone.dim("  (parked, waiting for a human to review or merge)"));
+    out.push(
+      ...renderBoxTable(
+        width,
+        [
+          { title: "TICKET", min: 11 },
+          { title: "PROJECT", min: 16 },
+          { title: "PR", min: 18 },
+          { title: "AGE", min: 4 },
+          { title: "SUMMARY", min: 20, flex: 1 },
+        ],
+        s.rvRows,
+      ),
+    );
+    out.push("");
+  }
+
+  out.push(tone.bold("IN FLIGHT"));
+  if (!s.ifRows.length) out.push(tone.dim("  nothing running"));
   else
     out.push(
       ...renderBoxTable(
         width,
         [
-          { title: "WORKER", min: 13 },
           { title: "TICKET", min: 11 },
-          { title: "PR", min: 5 },
+          { title: "PROJECT", min: 16 },
+          { title: "PR", min: 18 },
           { title: "CI", min: 4 },
-          { title: "STATUS / NOW", min: 20, flex: 1 },
+          { title: "DUE", min: 6 },
+          { title: "EST", min: 3 },
+          { title: "NOW", min: 20, flex: 1 },
         ],
         s.ifRows,
       ),
     );
-  if (s.moreInFlight > 0) out.push(`  \u2026 +${s.moreInFlight} more in flight`);
-  if (s.dormant > 0) out.push(`  \u{1F4A4} ${s.dormant} dormant`);
-  if (s.nowRows.length) {
+  if (b.dormant > 0) out.push(tone.dim(`  \u{1F4A4} ${b.dormant} dormant (no activity for 48h)`));
+
+  if (b.queue.length) {
     out.push("");
-    out.push("QUEUE");
+    out.push(
+      tone.bold("QUEUE") +
+        tone.dim("  (assigned to you, no worker yet)") +
+        (b.overdue ? tone.red(`  \u26A0 ${b.overdue} overdue`) : ""),
+    );
+    const shown = b.queue.slice(0, 10);
     out.push(
       ...renderBoxTable(
         width,
         [
-          { title: "P", min: 2 },
-          { title: "ITEM", min: 20, flex: 1 },
+          { title: "PRI", min: 6 },
+          { title: "TICKET", min: 11 },
+          { title: "PROJECT", min: 16 },
+          { title: "DUE", min: 6 },
+          { title: "EST", min: 3 },
+          { title: "TITLE", min: 20, flex: 1 },
         ],
-        s.nowRows,
+        shown.map((t) => {
+          const due = fmtDue(t.dueDate, s.now);
+          const dueText = due.level === "overdue" ? tone.red(due.text) : due.level === "soon" ? tone.amber(due.text) : due.text;
+          const pri = PRIORITY_LABEL[t.priority] ?? "-";
+          return [t.priority === 1 ? tone.red(pri) : pri, t.id, shortProject(t.project), dueText, t.estimate != null ? String(t.estimate) : "-", t.title];
+        }),
       ),
     );
+    if (b.queue.length > shown.length) out.push(tone.dim(`  \u2026 +${b.queue.length - shown.length} more`));
   }
   return out;
 }
 
+const seenNeedsYou = new Map<string, Set<string>>();
 
-/** Beacon: a fixed ≤3-line status light for the always-on widget — never truncates. */
-
-/** Beacon: a fixed ≤3-line status light for the always-on widget — never truncates. */
+/** Beacon: one line. Never truncates. */
 export async function buildBeaconLines(cwd: string): Promise<string[]> {
-  const checkpoints = await readWorkerCheckpoints(cwd);
-  const paths = await ensureState(cwd);
-  const queue = await readJson<QueueState>(paths.queueFile, { items: [] });
-  const openQueue = queue.items.filter((i) => i.status === "open");
-  const working = checkpoints.filter((w) => w.status === "working");
-  const blockers = checkpoints.filter(
-    (w) => w.status === "blocked" || w.status === "awaiting_approval",
-  );
-  const awaiting = working.filter((w) => {
-    const s = liveAgentStatus.get(w.worker_id);
-    const replied =
-      w.last_nudge_at && Date.now() - new Date(w.last_nudge_at).getTime() < 5 * 60_000;
-    return s && /awaiting/i.test(s.status) && !replied;
-  });
-  const needsYou = awaiting.length + blockers.length + openQueue.filter((i) => i.priority <= 2).length;
-  const hot = needsYou > 0 ? " 🔴" : "";
-  const landing = checkpoints.filter((w) => w.status === "landing");
-  const beacon: string[] = [
-    `⚡ CC${hot} · needs-you ${needsYou} · in-flight ${working.length} · landing ${landing.length} · queue ${openQueue.length} · alt+c console`,
+  const { board: b } = await loadBoard(cwd);
+  const n = b.needsYou.length;
+  const efforts = [0, 1, 2]
+    .map((r) => [r, b.needsYou.filter((i) => i.effortRank === r).length] as const)
+    .filter(([, c]) => c > 0)
+    .map(([r, c]) => `${["\u26A1", "\u2615", "\u{1F9F1}"][r]}${c}`)
+    .join(" ");
+  const head = n ? `\u{1F534} \u270B ${n} need you (${efforts})` : "\u2713 all clear";
+  const parts = [
+    `\u26A1 CC ${head}`,
+    `\u{1F535} ${b.inFlight.length} in flight`,
+    `\u{1F6EC} ${b.awaitingReview.length} in review`,
+    `\u{1F4E5} ${b.queue.length} queued${b.overdue ? ` (${b.overdue} \u26A0)` : ""}`,
+    "alt+c console",
   ];
-  return beacon.slice(0, 1);
+  return [parts.join(" \u00b7 ")];
 }
-
 
 export async function renderDashboardWidget(ctx: ExtensionCommandContext) {
   const key = ctx.sessionManager.getSessionId();
@@ -343,6 +463,17 @@ export async function renderDashboardWidget(ctx: ExtensionCommandContext) {
     ctx.ui.setWidget("command-centre-dashboard", undefined);
     return;
   }
+  const { board } = await loadBoard(ctx.cwd);
+  const keys = new Set(board.needsYou.map((i) => `${i.worker}:${i.why}`));
+  const seen = seenNeedsYou.get(key);
+  if (seen) {
+    for (const item of board.needsYou) {
+      if (!seen.has(`${item.worker}:${item.why}`)) {
+        ctx.ui.notify(`${WHY_STYLE[item.why].glyph} ${item.ticket}: ${item.why.toLowerCase()} (${item.effort}) \u2014 alt+c`, "warning");
+      }
+    }
+  }
+  seenNeedsYou.set(key, keys);
   const beacon = await buildBeaconLines(ctx.cwd);
   ctx.ui.setWidget("command-centre-dashboard", beacon);
 }

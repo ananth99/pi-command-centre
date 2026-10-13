@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { ActiveController, CCConfig, QueueState, WorkerCheckpoint } from "./types";
+import type { ActiveController, CCConfig, WorkerCheckpoint } from "./types";
 import { DEFAULT_CC_CONFIG } from "./types";
 
 const execFileAsync = promisify(execFile);
@@ -28,7 +28,6 @@ export function getPaths(cwd: string) {
     root,
     registryFile: join(root, "registry.json"),
     workersDir: join(root, "workers"),
-    queueFile: join(root, "queue.json"),
     eventsFile: join(root, "events.jsonl"),
     activeControllerFile: join(root, "active-controller.json"),
   };
@@ -45,10 +44,6 @@ export async function ensureState(cwd: string) {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
-  }
-
-  if (!existsSync(paths.queueFile)) {
-    await writeJson(paths.queueFile, { items: [] satisfies QueueItem[] });
   }
 
   if (!existsSync(paths.eventsFile)) {
@@ -135,7 +130,7 @@ export async function readWorkerCheckpoints(cwd: string): Promise<WorkerCheckpoi
     // (e.g. "landing"), which every loop silently ignores — a permanent,
     // unlogged dormancy. Clamp unknowns to "working" (the safe default: it
     // resumes scans and wake-ups) and stamp the file so the fix persists.
-    const validStatuses = new Set(["working", "blocked", "awaiting_approval", "done", "failed"]);
+    const validStatuses = new Set(["working", "landing", "blocked", "awaiting_approval", "done", "failed"]);
     if (!validStatuses.has(checkpoint.status)) {
       const badStatus = checkpoint.status;
       checkpoint.status = "working";
@@ -195,6 +190,7 @@ export async function readCCConfig(cwd: string): Promise<CCConfig> {
     agent: { ...DEFAULT_CC_CONFIG.agent, ...(loaded.agent ?? {}) },
     mode: loaded.mode === "code-verdicts" ? "code-verdicts" : "prompt-verdicts",
     budgets: { ...DEFAULT_CC_CONFIG.budgets, ...(loaded.budgets ?? {}) },
+    assignedTickets: { poll: loaded.assignedTickets?.poll !== false },
   };
 }
 

@@ -17,6 +17,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import type { WorkerCheckpoint } from "./types";
 import { readCCConfig, readWorkerCheckpoints, setActiveController, getActiveController, clearActiveController, appendEvent, ensureState } from "./state";
 import { renderDashboardWidget, dashboardHiddenSessions, blockedControllerSessions, commandCentreModeSessions, refreshTimers } from "./ui";
+import { pollAssignedTickets } from "./assigned";
 import { runVerdictCycle, maybeSpawnCheckWorkers, probeAgentSessions, autoCloseMergedWorkers, maybeReviveForNewPRs, reapStaleRenderSessions } from "./cycle";
 import { doReply, launchHotkey, replyHotkey, closeHotkey, actHotkey, inspectHotkey } from "./actions";
 import { openConsole } from "./ui";
@@ -179,8 +180,21 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
 
     const existing = refreshTimers.get(key);
     if (existing) clearInterval(existing);
+    // The ctx captured in this interval goes stale after newSession/fork/
+    // switchSession/reload. assertActive then throws (sync, inside the async
+    // body) before any .catch can attach, surfacing as an uncaughtException
+    // that kills pi. Catch the staleness and self-destruct the orphaned timer.
+    const isStaleCtx = (e: unknown) =>
+      e instanceof Error && /ctx is stale|assertActive/i.test(e.message);
+    const killTick = () => {
+      clearInterval(timer);
+      refreshTimers.delete(key);
+    };
     const timer = setInterval(() => {
-      void renderDashboardWidget(ctx); // beacon: every session, always
+      // beacon: every session, always - die quietly if ctx is stale
+      renderDashboardWidget(ctx).catch((e: unknown) => {
+        if (isStaleCtx(e)) killTick();
+      });
       void (async () => {
         // Mutating ops run only in the session that owns (or can claim) the lock.
         const a = await getActiveController(ctx.cwd);
@@ -198,11 +212,14 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
         } else {
           await maybeSpawnCheckWorkers({ cwd: ctx.cwd }).catch(() => {});
         }
+        if (cfg?.assignedTickets?.poll !== false) await pollAssignedTickets(ctx.cwd).catch(() => {});
         await probeAgentSessions(ctx.cwd).catch(() => {});
         await autoCloseMergedWorkers(ctx.cwd).catch(() => {});
         await maybeReviveForNewPRs(ctx.cwd).catch(() => {});
         await reapStaleRenderSessions().catch(() => {});
-      })();
+      })().catch((e: unknown) => {
+        if (isStaleCtx(e)) killTick();
+      });
     }, 20000);
     refreshTimers.set(key, timer);
   });

@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Board
+- **One source of truth (`board.ts`)** — pure `deriveBoard()` feeds both beacon and console, so a worker appears in exactly one section and the two surfaces can't disagree. Tested (`board.test.ts`).
+- **NEEDS YOU redesign** — classified by reason (QUESTION / BLOCKED / STALLED / APPROVE) with effort tag (quick win vs. big), age heat, PR chain, and the hotkey to act. A "NEXT UP" hero card shows the single best item; "ALL CLEAR" when empty.
+- **Assigned-ticket queue** — the dead `queue.json` is gone. The queue is now your assigned Linear tickets with no worker yet (polled, throttled, `assignedTickets.poll`), sorted by priority then due date, with project, due (overdue flagged) and estimate. In-flight rows carry the same metadata.
+- **Stacked PRs** — PR column shows the chain (`#984→985`, `#996 +3`), deduped.
+- **AWAITING REVIEW** section for parked workers; today's landed / merged / replies line; one-line beacon with effort breakdown; in-TUI notification on *new* needs-you items only.
+
+### Fixed
+- Status sanitizer rejected `landing` and demoted landed workers to `working` on every read, flip-flopping with the verdict engine.
+
 ## [0.1.0] — 2026-10-02
 
 First properly-versioned release. Everything below shipped over a single working session that grew from "a widget that shows worker status" into a tested supervisor platform.

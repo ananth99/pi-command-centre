@@ -8,7 +8,7 @@ A [pi](https://github.com/earendil-works/pi-coding-agent) extension that turns y
 
 - **Workers.** `alt`-driven launch spawns a headless `pi` process (via [`zmx`](#requirements)) that runs a bounded task end-to-end: implement a ticket, execute a test plan, audit a codebase. Each writes a structured checkpoint.
 - **A reconciler, not a chat.** Each worker wakes on a timer, reads the live state (ticket-tracker sessions, `gh pr` checks, review threads, branch names, commit signatures), decides **exactly one action** (nudge / fix-ci / rebase / squash-sign / rename / wait / escalate), writes a checkpoint, exits. The controller session re-spawns wake-ups when a checkpoint goes stale.
-- **A beacon, not a dashboard.** The always-on widget is a fixed ≤3-line status light (`⚡ CC 🔴 · needs-you 1 · in-flight 2 · queue 0`). The rich, scrollable tables live one hotkey away in an overlay console — so nothing ever truncates in the height-capped widget.
+- **A beacon, not a dashboard.** The always-on widget is a fixed ≤3-line status light (`⚡ CC 🔴 ✋ 2 need you (⚡1 ☕1) · 🔵 3 in flight · 🛬 1 in review · 📥 7 queued`). The rich, scrollable tables live one hotkey away in an overlay console — so nothing ever truncates in the height-capped widget.
 - **Self-cleaning.** Workers auto-close when their PR merges. Stale "needs you" flags reconcile automatically when the agent resumes. Done workers resurrect if their ticket gains a new PR.
 - **Queue-flush built in.** Comments posted to a ticket-tracker agent can sit `queued: true, sentAt: null` (undelivered). Every post auto-flushes via the tracker's send-queue mutation so messages land immediately.
 
@@ -42,7 +42,7 @@ Press `alt+l` and follow the prompts (tickets → repo → agent). One superviso
          one action per wake-up, writes a checkpoint JSON
 ```
 
-- **State store:** plain JSON under `<project>/.pi/command-centre/` — `workers/*.json` (checkpoints), `queue.json`, `events.jsonl`, `config.json`.
+- **State store:** plain JSON under `<project>/.pi/command-centre/` — `workers/*.json` (checkpoints), `assigned.json`, `events.jsonl`, `config.json`.
 - **The clock is yours:** the 20s tick lives in the extension; `pi` sessions are stateless wake-ups. Only one session (heartbeat-elected) runs the mutating tick; every session shows the read-only beacon.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.

@@ -10,10 +10,6 @@ export type Confidence = "low" | "medium" | "high";
 
 export type Risk = "low" | "medium" | "high";
 
-export type QueuePriority = 1 | 2 | 3 | 4;
-
-export type QueueStatus = "open" | "approved" | "rejected" | "resolved";
-
 
 export interface WorkerCheckpoint {
   worker_id: string;
@@ -71,25 +67,6 @@ export interface WorkerCheckpoint {
 }
 
 
-export interface QueueItem {
-  id: string;
-  priority: QueuePriority;
-  title: string;
-  source: "worker" | "github" | "linear" | "ops" | "manual";
-  status: QueueStatus;
-  worker_id?: string;
-  details?: string;
-  proposed_action?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-
-export interface QueueState {
-  items: QueueItem[];
-}
-
-
 export interface ActiveController {
   sessionId: string;
   startedAt: string;
@@ -113,6 +90,8 @@ export interface CCConfig {
   /** Budgets: cap what costs money — render spawns. State verdicts are free.
    *  Exhausted worker → BLOCKED + surfaced to the human. Human reply resets. */
   budgets: { maxRenders: number };
+  /** Poll the human's assigned Linear tickets into the console queue. */
+  assignedTickets: { poll: boolean };
 }
 
 
@@ -126,4 +105,5 @@ export const DEFAULT_CC_CONFIG: CCConfig = {
   wakeups: { staleMinutes: 10, checkTimeoutMinutes: 15 },
   agent: { name: "the-agent" },
   budgets: { maxRenders: 15 },
+  assignedTickets: { poll: true },
 };

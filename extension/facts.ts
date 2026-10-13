@@ -254,17 +254,31 @@ async function gatherPrFacts(
     const reviewApproved = pr.reviewDecision === "APPROVED";
     const state = (pr.state as PrFact["state"]) ?? "UNKNOWN";
 
-    // Threads: review comments + conversation comments.
+    // Threads: review comments (GraphQL — isResolved aware) + conversation comments (REST).
+    // Skip thread scanning entirely for merged/closed PRs — their threads are historical
+    // and should never trigger NUDGE_THREADS (Flaw #15: infinite loop on merged-PR comments).
     const threads: ThreadFact[] = [];
+    if (state === "MERGED" || state === "CLOSED") {
+      return { num, url, state, mergeStateStatus: pr.mergeStateStatus ?? null, reviewDecision: pr.reviewDecision ?? null, headRefName: pr.headRefName ?? null, branchConforming: true, hitlGateOk: true, commits: [], threads };
+    }
     try {
-      const tr = await deps.exec("gh", ["api", `repos/${repoFullName}/pulls/${num}/comments`,
-        "--jq", "[.[] | [.id, .created_at]]"], { cwd: repoPath });
-      const arr = safeJson<Array<[number, string]>>(tr.stdout) ?? [];
-      for (const [id, at] of arr) threads.push({ id: String(id), kind: "review", lastCommentAt: at });
+      const [gqlOwner, gqlRepo] = repoFullName.split("/");
+      const gqlQuery = `query { repository(owner:"${gqlOwner}",name:"${gqlRepo}") { pullRequest(number:${num}) { reviewThreads(first:100) { nodes { isResolved comments(first:1) { nodes { databaseId createdAt author { login } } } } } } } }`;
+      const tr = await deps.exec("gh", ["api", "graphql", "-f", `query=${gqlQuery}`], { cwd: repoPath });
+      const gqlData = safeJson<any>(tr.stdout);
+      const reviewThreadNodes: Array<{ isResolved: boolean; comments: { nodes: Array<{ databaseId: number; createdAt: string; author: { login: string } }> } }> =
+        gqlData?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+      for (const rt of reviewThreadNodes) {
+        if (rt.isResolved) continue; // ← the fix: skip resolved threads
+        const first = rt.comments?.nodes?.[0];
+        if (first) threads.push({ id: String(first.databaseId), kind: "review", lastCommentAt: first.createdAt });
+      }
     } catch { /* none */ }
     try {
+      // Conversation comments: filter out bot accounts (github-actions, linear-code, dependabot,
+      // copilot, ralph-bitgo — these are informational, not threads needing a response).
       const cr = await deps.exec("gh", ["api", `repos/${repoFullName}/issues/${num}/comments`,
-        "--jq", "[.[] | [.id, .created_at]]"], { cwd: repoPath });
+        "--jq", "[.[] | select(.user.login | test(\"\\\\[bot\\\\]$\") | not) | [.id, .created_at]]"], { cwd: repoPath });
       const arr = safeJson<Array<[number, string]>>(cr.stdout) ?? [];
       for (const [id, at] of arr) threads.push({ id: String(id), kind: "conversation", lastCommentAt: at });
     } catch { /* none */ }

@@ -34,7 +34,7 @@ Command Centre treats agent work like a control loop:
 | File | Purpose |
 |------|---------|
 | `workers/<id>.json` | per-worker checkpoint (status, verdict, evidence, live agent fields) |
-| `queue.json` | manual/derived intervention queue |
+| `assigned.json` | polled assigned-ticket backlog (the console queue) |
 | `events.jsonl` | append-only audit log |
 | `config.json` | model tiers, wake-up thresholds, agent name |
 | `active-controller.json` | heartbeat lock electing the tick owner |
