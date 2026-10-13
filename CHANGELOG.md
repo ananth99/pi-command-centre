@@ -10,6 +10,8 @@
 - **AWAITING REVIEW** section for parked workers; today's landed / merged / replies line; one-line beacon with effort breakdown; in-TUI notification on *new* needs-you items only.
 
 ### Fixed
+- Console overlay did not scroll (ScrollView had no viewport height) — replaced with explicit scrolling: ↑↓/j/k, PgUp/PgDn/space, g/G, mouse wheel, scrollbar and position in the header.
+- Console is wider (98% of terminal), tables use 2-space padding, row separators, and 3–4 column layouts so the text column gets the room. Cells support `\n`.
 - Status sanitizer rejected `landing` and demoted landed workers to `working` on every read, flip-flopping with the verdict engine.
 
 ## [0.1.0] — 2026-10-02

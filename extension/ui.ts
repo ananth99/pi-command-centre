@@ -17,8 +17,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
   truncateToWidth,
-  ScrollView,
-  Text,
+    Text,
   type Component,
 } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
@@ -258,12 +257,9 @@ export async function buildConsoleLines(cwd: string, width = 100): Promise<strin
     const m = meta(full.linear_issue_id);
     const ciText = ci === "green" ? tone.green("pass") : ci === "red" ? tone.red("FAIL") : ci === "running" ? tone.amber("run") : "-";
     ifRows.push([
-      full.linear_issue_id ?? full.worker_id,
+      `${full.linear_issue_id ?? full.worker_id}\n${tone.dim(prChain(prsOf(full), full.evidence?.pr))}`,
       m.project,
-      prChain(prsOf(full), full.evidence?.pr),
-      ciText,
-      m.due,
-      m.est,
+      `CI ${ciText}\n${tone.dim("due")} ${m.due} ${tone.dim("\u00b7 est")} ${m.est}`,
       `${glyph} ${verdict}${threads}${sessText}\u00b7 ${nowText}`,
     ]);
   }
@@ -273,9 +269,8 @@ export async function buildConsoleLines(cwd: string, width = 100): Promise<strin
     const m = meta(full.linear_issue_id);
     const age = ageOf(full.updated_at, now);
     return [
-      full.linear_issue_id ?? full.worker_id,
+      `${full.linear_issue_id ?? full.worker_id}\n${tone.dim(prChain(prsOf(full), full.evidence?.pr))}`,
       m.project,
-      prChain(prsOf(full), full.evidence?.pr),
       ageTone(age.text, age.hours),
       oneLine(full.summary || full.objective || "awaiting human review", 160),
     ];
@@ -341,23 +336,17 @@ export function formatConsole(s: ConsoleSnap, width: number): string[] {
       ...renderBoxTable(
         width,
         [
-          { title: "WHY", min: 10 },
-          { title: "TICKET", min: 11 },
-          { title: "PR", min: 18 },
-          { title: "AGE", min: 4 },
-          { title: "EFFORT", min: 7 },
-          { title: "WHAT \u2192 DO", min: 24, flex: 1 },
+          { title: "WHY", min: 14 },
+          { title: "TICKET", min: 18 },
+          { title: "WHAT \u2192 DO", min: 30, flex: 1 },
         ],
         b.needsYou.map((n) => {
           const st = WHY_STYLE[n.why];
           const age = ageOf(n.since, s.now);
           return [
-            st.color(`${st.glyph} ${n.why}`),
-            n.ticket,
-            prChain(n.prs, n.anchor),
-            ageTone(age.text, age.hours),
-            n.effort,
-            `${n.text} ${tone.dim(`\u2192 ${n.doIt}`)}`,
+            `${st.color(`${st.glyph} ${n.why}`)}\n${n.effort} ${tone.dim("\u00b7")} ${ageTone(age.text, age.hours)}`,
+            `${n.ticket}\n${tone.dim(prChain(n.prs, n.anchor))}`,
+            `${n.text}\n${tone.dim(`\u2192 ${n.doIt}`)}`,
           ];
         }),
       ),
@@ -371,11 +360,10 @@ export function formatConsole(s: ConsoleSnap, width: number): string[] {
       ...renderBoxTable(
         width,
         [
-          { title: "TICKET", min: 11 },
-          { title: "PROJECT", min: 16 },
-          { title: "PR", min: 18 },
-          { title: "AGE", min: 4 },
-          { title: "SUMMARY", min: 20, flex: 1 },
+          { title: "TICKET", min: 18 },
+          { title: "PROJECT", min: 18 },
+          { title: "AGE", min: 5 },
+          { title: "SUMMARY", min: 24, flex: 1 },
         ],
         s.rvRows,
       ),
@@ -390,13 +378,10 @@ export function formatConsole(s: ConsoleSnap, width: number): string[] {
       ...renderBoxTable(
         width,
         [
-          { title: "TICKET", min: 11 },
-          { title: "PROJECT", min: 16 },
-          { title: "PR", min: 18 },
-          { title: "CI", min: 4 },
-          { title: "DUE", min: 6 },
-          { title: "EST", min: 3 },
-          { title: "NOW", min: 20, flex: 1 },
+          { title: "TICKET", min: 18 },
+          { title: "PROJECT", min: 18 },
+          { title: "STATUS", min: 16 },
+          { title: "NOW", min: 24, flex: 1 },
         ],
         s.ifRows,
       ),
@@ -415,18 +400,17 @@ export function formatConsole(s: ConsoleSnap, width: number): string[] {
       ...renderBoxTable(
         width,
         [
-          { title: "PRI", min: 6 },
-          { title: "TICKET", min: 11 },
-          { title: "PROJECT", min: 16 },
-          { title: "DUE", min: 6 },
-          { title: "EST", min: 3 },
-          { title: "TITLE", min: 20, flex: 1 },
+          { title: "TICKET", min: 14 },
+          { title: "PROJECT", min: 18 },
+          { title: "DUE", min: 8 },
+          { title: "TITLE", min: 24, flex: 1 },
         ],
         shown.map((t) => {
           const due = fmtDue(t.dueDate, s.now);
           const dueText = due.level === "overdue" ? tone.red(due.text) : due.level === "soon" ? tone.amber(due.text) : due.text;
           const pri = PRIORITY_LABEL[t.priority] ?? "-";
-          return [t.priority === 1 ? tone.red(pri) : pri, t.id, shortProject(t.project), dueText, t.estimate != null ? String(t.estimate) : "-", t.title];
+          const est = t.estimate != null ? ` \u00b7 est ${t.estimate}` : "";
+          return [`${t.id}\n${tone.dim(pri)}${tone.dim(est)}`, shortProject(t.project), dueText, t.title];
         }),
       ),
     );
@@ -495,7 +479,7 @@ export async function openConsole(ctx: ExtensionCommandContext) {
         tui,
         done,
       ),
-    { overlay: true },
+    { overlay: true, overlayOptions: { width: "98%", maxHeight: "96%", anchor: "center" } },
   );
 }
 
@@ -523,46 +507,76 @@ export class StaticContent implements Component {
   invalidate(): void {}
 }
 
-/** Bordered overlay pane backed by pi-tui ScrollView (scrollbar + mouse-wheel). */
-
-/** Bordered overlay pane backed by pi-tui ScrollView (scrollbar + mouse-wheel). */
+/** Bordered overlay pane with explicit scrolling (keys, PgUp/PgDn, mouse wheel). */
 export class OverlayPane implements Component {
   private title: string;
-  private sv: ScrollView;
-  private tui: { requestRender?: () => void; height?: number; rows?: number };
+  private content: Component;
+  private tui: { requestRender?: () => void; terminal?: { rows?: number } };
   private done: (v: null) => void;
+  private top = 0;
+  private lastTotal = 0;
+  private lastView = 20;
   constructor(
     title: string,
     content: Component,
-    tui: { requestRender?: () => void; height?: number; rows?: number },
+    tui: { requestRender?: () => void; terminal?: { rows?: number } },
     done: (v: null) => void,
   ) {
     this.title = title;
+    this.content = content;
     this.tui = tui;
     this.done = done;
-    this.sv = new ScrollView(content, { follow: "none", scrollbar: "auto" });
+  }
+  private viewHeight(): number {
+    const rows = this.tui.terminal?.rows ?? process.stdout.rows ?? 40;
+    return Math.max(8, Math.floor(rows * 0.94) - 2);
+  }
+  private clamp() {
+    this.top = Math.max(0, Math.min(this.top, Math.max(0, this.lastTotal - this.lastView)));
   }
   render(width: number): string[] {
     const inner = Math.max(20, width - 2);
-    const head = ` ${this.title} · ↑↓ PgUp/PgDn scroll · q close · alt+a act `;
+    const lines = this.content.render(inner - 2);
+    const view = this.viewHeight();
+    this.lastTotal = lines.length;
+    this.lastView = view;
+    this.clamp();
+    const slice = lines.slice(this.top, this.top + view);
+    while (slice.length < Math.min(view, lines.length)) slice.push("");
+    const max = Math.max(1, lines.length - view);
+    const thumbSize = Math.max(1, Math.round((view * view) / Math.max(view, lines.length)));
+    const thumbPos = Math.round((this.top / max) * (view - thumbSize));
+    const scrollable = lines.length > view;
+    const pos = scrollable ? ` ${this.top + 1}\u2013${Math.min(lines.length, this.top + view)}/${lines.length} ` : "";
+    const head = ` ${this.title} \u00b7 \u2191\u2193 j/k scroll \u00b7 PgUp/PgDn \u00b7 g/G \u00b7 q close${pos ? " \u00b7" + pos : ""}`;
     const top = `\u250c${head.slice(0, inner).padEnd(inner, "\u2500")}\u2510`;
-    const body = this.sv.render(inner).map((l) => {
-      const padw = Math.max(0, inner - visibleWidth(l));
-      return `\u2502${l}${" ".repeat(padw)}\u2502`;
+    const body = slice.map((l, i) => {
+      const padw = Math.max(0, inner - 2 - visibleWidth(l));
+      const bar = scrollable && i >= thumbPos && i < thumbPos + thumbSize ? "\u2503" : "\u2502";
+      return `\u2502 ${l}${" ".repeat(padw)} ${bar}`;
     });
     const bottom = `\u2514${"\u2500".repeat(inner)}\u2518`;
     return [top, ...body, bottom];
   }
-  handleInput(data: string): void {
-    if (matchesKey(data, "escape") || data === "q") {
-      this.done(null);
-      return;
-    }
-    this.sv.handleInput?.(data);
+  private scroll(by: number) {
+    this.top += by;
+    this.clamp();
     this.tui.requestRender?.();
   }
-  handleMouse(ev: unknown): unknown {
-    return (this.sv as unknown as { handleMouse?: (e: unknown) => unknown }).handleMouse?.(ev);
+  handleInput(data: string): void {
+    if (matchesKey(data, "escape") || data === "q") return this.done(null);
+    const page = Math.max(1, this.lastView - 2);
+    if (matchesKey(data, "down") || data === "j") return this.scroll(1);
+    if (matchesKey(data, "up") || data === "k") return this.scroll(-1);
+    if (matchesKey(data, "pageDown") || data === " " || matchesKey(data, "ctrl+d")) return this.scroll(page);
+    if (matchesKey(data, "pageUp") || matchesKey(data, "ctrl+u")) return this.scroll(-page);
+    if (matchesKey(data, "home") || data === "g") return this.scroll(-1e9);
+    if (matchesKey(data, "end") || data === "G") return this.scroll(1e9);
+  }
+  handleMouse(ev: { type?: string; wheelDelta?: number }): { handled: true; render: true } | undefined {
+    if (ev.type !== "wheel" || !ev.wheelDelta) return undefined;
+    this.scroll(Math.sign(ev.wheelDelta) * 3);
+    return { handled: true, render: true };
   }
   invalidate(): void {}
 }
@@ -576,7 +590,7 @@ export async function showPager(ctx: ExtensionCommandContext, title: string, con
   await ctx.ui.custom<null>(
     (tui, _theme, _keybindings, done) =>
       new OverlayPane(title, new Text(content), tui, done),
-    { overlay: true },
+    { overlay: true, overlayOptions: { width: "98%", maxHeight: "96%", anchor: "center" } },
   );
 }
 
@@ -595,7 +609,7 @@ export function renderBoxTable(
   rows: string[][],
 ): string[] {
   const n = columns.length;
-  const overhead = 3 * n + 1; // │ + " x " padding per column + trailing │
+  const overhead = 5 * n + 1; // │ + 2-space padding each side per column + trailing │
   const avail = Math.max(n * 3, totalWidth - overhead);
   const widths = columns.map((c) => c.min);
   const flexIdx = columns.map((c, i) => (c.flex ? i : -1)).filter((i) => i >= 0);
@@ -614,18 +628,19 @@ export function renderBoxTable(
     over -= 1;
   }
   const bar = (l: string, m: string, r: string) =>
-    l + widths.map((w) => "\u2500".repeat(w + 2)).join(m) + r;
+    l + widths.map((w) => "\u2500".repeat(w + 4)).join(m) + r;
   const rowLines = (cells: string[]): string[] => {
     const wrapped = widths.map((w, i) => {
-      const t = (cells[i] ?? "").replace(/\s+/g, " ").trim();
-      return t ? wrapText(t, w, 12) : [""];
+      const parts = (cells[i] ?? "").split("\n").map((p) => p.replace(/\s+/g, " ").trim());
+      const lines = parts.flatMap((p) => (p ? wrapText(p, w, 12) : [""]));
+      return lines.length ? lines : [""];
     });
     const height = Math.max(...wrapped.map((c) => c.length), 1);
     const out: string[] = [];
     for (let li = 0; li < height; li++) {
       const parts = widths.map((w, ci) => {
         const line = wrapped[ci]![li] ?? "";
-        return ` ${line}${" ".repeat(Math.max(0, w - visibleWidth(line)))} `;
+        return `  ${line}${" ".repeat(Math.max(0, w - visibleWidth(line)))}  `;
       });
       out.push(`\u2502${parts.join("\u2502")}\u2502`);
     }
@@ -634,7 +649,10 @@ export function renderBoxTable(
   const lines: string[] = [bar("\u250c", "\u252c", "\u2510")];
   lines.push(...rowLines(columns.map((c) => c.title)));
   lines.push(bar("\u251c", "\u253c", "\u2524"));
-  for (const r of rows) lines.push(...rowLines(r));
+  rows.forEach((r, i) => {
+    if (i > 0) lines.push(tone.dim(bar("\u251c", "\u253c", "\u2524")));
+    lines.push(...rowLines(r));
+  });
   lines.push(bar("\u2514", "\u2534", "\u2518"));
   return lines;
 }

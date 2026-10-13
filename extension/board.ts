@@ -229,7 +229,7 @@ export function todayStats(events: Array<{ ts?: string; type?: string }>, now: n
 }
 
 /** Readable project label: drop the team prefix, cap long names at a word boundary. */
-export function shortProject(name: string | null | undefined, max = 26): string {
+export function shortProject(name: string | null | undefined, max = 60): string {
   if (!name) return "-";
   const n = name.replace(/^SCaaS\s+/i, "").replace(/\s+/g, " ").trim();
   if (n.length <= max) return n;
