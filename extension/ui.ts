@@ -405,7 +405,7 @@ export function formatConsole(s: ConsoleSnap, width: number): string[] {
     out.push(
       tone.bold("QUEUE") +
         tone.dim("  (assigned to you, no worker yet)") +
-        (b.overdue ? tone.red(`  \u26A0 ${b.overdue} overdue`) : ""),
+        (b.overdue ? tone.red(`  \u2757 ${b.overdue} overdue`) : ""),
     );
     const shown = b.queue.slice(0, 10);
     out.push(
@@ -431,10 +431,28 @@ export function formatConsole(s: ConsoleSnap, width: number): string[] {
   return out;
 }
 
-const seenNeedsYou = new Map<string, Set<string>>();
+/** First-seen time per needs-you item (0 = already there when the session started). */
+const firstSeen = new Map<string, Map<string, number>>();
+const FRESH_MS = 5 * 60_000;
+
+function freshItems(sessionKey: string, items: Array<{ worker: string; why: string; ticket: string }>): string[] {
+  const known = firstSeen.get(sessionKey);
+  const seeding = !known;
+  const map = known ?? new Map<string, number>();
+  const now = Date.now();
+  const keys = new Set<string>();
+  for (const it of items) {
+    const k = `${it.worker}:${it.why}`;
+    keys.add(k);
+    if (!map.has(k)) map.set(k, seeding ? 0 : now);
+  }
+  for (const k of [...map.keys()]) if (!keys.has(k)) map.delete(k);
+  firstSeen.set(sessionKey, map);
+  return items.filter((it) => now - (map.get(`${it.worker}:${it.why}`) ?? 0) < FRESH_MS).map((it) => it.ticket);
+}
 
 /** Beacon: one line. Never truncates. */
-export async function buildBeaconLines(cwd: string): Promise<string[]> {
+export async function buildBeaconLines(cwd: string, fresh: string[] = []): Promise<string[]> {
   const { board: b } = await loadBoard(cwd);
   const n = b.needsYou.length;
   const efforts = [0, 1, 2]
@@ -447,7 +465,8 @@ export async function buildBeaconLines(cwd: string): Promise<string[]> {
     `\u26A1 CC ${head}`,
     `\u{1F535} ${b.inFlight.length} in flight`,
     `\u{1F6EC} ${b.awaitingReview.length} in review`,
-    `\u{1F4E5} ${b.queue.length} queued${b.overdue ? ` (${b.overdue} \u26A0)` : ""}`,
+    `\u{1F4E5} ${b.queue.length} queued${b.overdue ? ` (${b.overdue} \u2757)` : ""}`,
+    ...(fresh.length ? [tone.amber(`\u{1F195} ${[...new Set(fresh)].join(", ")}`)] : []),
     "alt+c console",
   ];
   return [parts.join(" \u00b7 ")];
@@ -461,17 +480,8 @@ export async function renderDashboardWidget(ctx: ExtensionCommandContext) {
   }
   applyTheme(ctx.ui.theme);
   const { board } = await loadBoard(ctx.cwd);
-  const keys = new Set(board.needsYou.map((i) => `${i.worker}:${i.why}`));
-  const seen = seenNeedsYou.get(key);
-  if (seen) {
-    for (const item of board.needsYou) {
-      if (!seen.has(`${item.worker}:${item.why}`)) {
-        ctx.ui.notify(`${WHY_STYLE[item.why].glyph} ${item.ticket}: ${item.why.toLowerCase()} (${item.effort}) \u2014 alt+c`, "warning");
-      }
-    }
-  }
-  seenNeedsYou.set(key, keys);
-  const beacon = await buildBeaconLines(ctx.cwd);
+  const fresh = freshItems(key, board.needsYou);
+  const beacon = await buildBeaconLines(ctx.cwd, fresh);
   ctx.ui.setWidget("command-centre-dashboard", beacon);
 }
 

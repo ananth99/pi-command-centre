@@ -192,7 +192,7 @@ export function fmtDue(due: string | null, now: number): { text: string; level: 
   const d = new Date(`${due}T00:00:00Z`);
   const text = d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
   const days = Math.floor((d.getTime() - new Date(new Date(now).toISOString().slice(0, 10)).getTime()) / 86400_000);
-  if (days < 0) return { text: `\u26A0 ${text}`, level: "overdue" };
+  if (days < 0) return { text: `\u2757 ${text}`, level: "overdue" };
   return { text, level: days <= 2 ? "soon" : "ok" };
 }
 

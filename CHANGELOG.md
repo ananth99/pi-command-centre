@@ -7,7 +7,7 @@
 - **NEEDS YOU redesign** — classified by reason (QUESTION / BLOCKED / STALLED / APPROVE) with effort tag (quick win vs. big), age heat, PR chain, and the hotkey to act. A "NEXT UP" hero card shows the single best item; "ALL CLEAR" when empty.
 - **Assigned-ticket queue** — the dead `queue.json` is gone. The queue is now your assigned Linear tickets with no worker yet (polled, throttled, `assignedTickets.poll`), sorted by priority then due date, with project, due (overdue flagged) and estimate. In-flight rows carry the same metadata.
 - **Stacked PRs** — PR column shows the chain (`#984→985`, `#996 +3`), deduped.
-- **AWAITING REVIEW** section for parked workers; today's landed / merged / replies line; one-line beacon with effort breakdown; in-TUI notification on *new* needs-you items only.
+- **AWAITING REVIEW** section for parked workers; today's landed / merged / replies line; one-line beacon with effort breakdown; a 🆕 marker in the beacon (5 min) on *new* needs-you items — no chat-log spam.
 
 ### Fixed
 - Colors now come from pi's active theme (`theme.fg` semantic tokens) instead of hardcoded ANSI, so light/dark and custom themes work.
