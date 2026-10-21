@@ -481,7 +481,7 @@ interface BeaconCache {
   writtenAt: number;
 }
 
-const BEACON_STALE_MS = 30_000;
+const BEACON_STALE_MS = 5 * 60_000;
 
 /** Controller writes the beacon; every session reads it. */
 export async function writeBeaconCache(cwd: string, fresh: string[] = []): Promise<void> {
@@ -520,14 +520,11 @@ export async function renderDashboardWidget(ctx: ExtensionCommandContext) {
     const paths = await ensureState(ctx.cwd);
     await writeJson(join(paths.root, "beacon.json"), { line, writtenAt: Date.now() } satisfies BeaconCache).catch(() => {});
   } else {
-    // Reader: use the controller's cached beacon
-    const cached = await readBeaconCache(ctx.cwd);
-    if (cached) {
-      line = cached;
-    } else {
-      // Cache stale or missing — compute our own as fallback
-      const beacon = await buildBeaconLines(ctx.cwd);
-      line = beacon[0] ?? "";
+    // Reader: use the controller's cached beacon, never recompute
+    try {
+      line = (await readBeaconCache(ctx.cwd)) ?? "⚡ CC · waiting for controller · alt+c console";
+    } catch {
+      line = "⚡ CC · beacon read failed · alt+c console";
     }
   }
 

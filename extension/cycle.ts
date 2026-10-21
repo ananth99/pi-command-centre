@@ -292,7 +292,7 @@ export async function maybeSpawnCheckWorkers(ctx: { cwd: string }): Promise<void
       agentName: w.agent_name ?? config.agent.name,
       expectedPr: w.expected_pr,
       basePr: w.base_pr,
-      scanPrs: w.scan_prs ?? (w.evidence?.pr ? [w.evidence.pr] : []),
+      scanPrs: w.scan_prs?.map(String) ?? (w.evidence?.pr ? [String(w.evidence.pr)] : []),
       repoPath: w.evidence?.repo ?? ctx.cwd,
       checkpointPath,
       eventsPath: paths.eventsFile,
@@ -408,7 +408,10 @@ export async function autoCloseMergedWorkers(cwd: string): Promise<void> {
     // closed (a closed-without-merge PR like a deferred slice is terminal too).
     // Closing on the anchor alone would retire the worker while live stack
     // siblings still need supervision.
-    const prUrls = [...new Set([w.expected_pr || w.evidence?.pr, ...(w.scan_prs ?? [])].filter(Boolean))] as string[];
+    // LLM wake-ups may write evidence.pr / scan_prs as bare numbers — coerce before regex use.
+    const prUrls = [...new Set(
+      [w.expected_pr || w.evidence?.pr, ...(w.scan_prs ?? [])].filter(Boolean).map(String),
+    )];
     type PrRef = { num: string; owner?: string; repo?: string };
     const prRefs: PrRef[] = [];
     for (const url of prUrls) {
@@ -441,8 +444,8 @@ export async function autoCloseMergedWorkers(cwd: string): Promise<void> {
       const allTerminal = prRefs.every(
         (ref) => states[ref.num]?.state === "MERGED" || states[ref.num]?.state === "CLOSED",
       );
-      const anchor = w.expected_pr || w.evidence?.pr;
-      const anchorNum = anchor?.match(/(\d+)/)?.[1];
+      const anchor = String(w.expected_pr || w.evidence?.pr ?? "");
+      const anchorNum = anchor.match(/(\d+)/)?.[1];
       const anchorState = anchorNum ? states[anchorNum] : undefined;
       if (allTerminal && anchorState?.state === "MERGED") {
         w.status = "done";
@@ -538,7 +541,7 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
         // gates pass (single, verified) → park it. Stops pointless WAIT wake-ups;
         // the cheap probe below keeps watching it and unparks on any change.
         if (w.status === "working" && /complete/i.test(latest.status)) {
-          const pr = w.expected_pr || w.evidence?.pr || "";
+          const pr = String(w.expected_pr || w.evidence?.pr || "");
           const prNum = pr.match(/(\d+)/)?.[1];
           if (prNum && w.evidence?.repo) {
             try {
@@ -578,7 +581,7 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
         // the moment anything changes: new review comments, unsigned/multiple
         // commits, CI dirty, review approved (approved also handled in auto-close).
         if (w.status === "landing") {
-          const pr = w.expected_pr || w.evidence?.pr || "";
+          const pr = String(w.expected_pr || w.evidence?.pr || "");
           const prNum = pr.match(/(\d+)/)?.[1];
           const repoPath = w.evidence?.repo;
           if (prNum && repoPath) {
