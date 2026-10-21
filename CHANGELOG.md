@@ -12,6 +12,10 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### Branch conformance
+- **Every worker was being flagged as a badly-named branch.** `branchConforming` interpolated `CC_BRANCH_OWNER ?? "owner"`; with the variable unset *or empty* the pattern became `^/SCAAS-...`, which no branch matches. Result: each worker took a `BRANCH_RENAME` it could never satisfy, burned 2 attempts, then escalated to a repeating `ASK` (SCAAS-11712: 10 ASK renders in 2h). The owner segment is now accepted by default (`[^/]+`); set `CC_BRANCH_OWNER` to pin a specific owner. 3 regression tests.
+- **Unguarded terminal verdicts.** The `rename-exhausted → ASK` return was not wrapped in `guarded()`, so it re-spawned a render worker every tick. Now guarded.
+
 ### Reroll guard
 - **Blind-and-immortal workers are now impossible.** If every PR a worker tracks is CLOSED (not merged), CC re-discovers the ticket's current open PRs and repoints the worker (event `prs_rerolled`). Previously discovery ran once, so a closed-and-rerolled stack (SCAAS-11445: #10208-210 closed → rerolled #10778-781) left the worker pointing at dead PRs forever — it could never land and never retire. Throttled to one `gh` sweep per worker per 5 minutes.
 

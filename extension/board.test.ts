@@ -68,3 +68,49 @@ test("todayStats", () => {
   const s = todayStats([{ ts: "2026-10-13T01:00:00Z", type: "worker_landing" }, { ts: "2026-10-12T01:00:00Z", type: "worker_landing" }, { ts: "2026-10-13T02:00:00Z", type: "human_reply" }], NOW);
   assert.deepEqual(s, { landed: 1, merged: 0, replies: 1 });
 });
+
+// ── branch convention (the CC_BRANCH_OWNER="" regression) ──────────────
+
+test("branch names conform without CC_BRANCH_OWNER set", async () => {
+  const { branchConforming } = await import("./facts.ts");
+  const prev = process.env.CC_BRANCH_OWNER;
+  delete process.env.CC_BRANCH_OWNER;
+  try {
+    assert.equal(branchConforming("ananth/SCAAS-11712-per-asset-stablecoin-tandc-pt1", "SCAAS-11712"), true);
+    assert.equal(branchConforming("ananth/SCAAS-11712-0-contract", "SCAAS-11712"), true);
+    assert.equal(branchConforming("ananth/SCAAS-11712", "SCAAS-11712"), true);
+    assert.equal(branchConforming("deivas/SCAAS-11044-1b-presenter-hoist", "SCAAS-11044"), true);
+    // wrong ticket, or no ticket at all
+    assert.equal(branchConforming("ananth/SCAAS-99999-thing", "SCAAS-11712"), false);
+    assert.equal(branchConforming("feature-branch", "SCAAS-11712"), false);
+    assert.equal(branchConforming(null, "SCAAS-11712"), false);
+  } finally {
+    if (prev === undefined) delete process.env.CC_BRANCH_OWNER;
+    else process.env.CC_BRANCH_OWNER = prev;
+  }
+});
+
+test("CC_BRANCH_OWNER pins the owner when set", async () => {
+  const { branchConforming } = await import("./facts.ts");
+  const prev = process.env.CC_BRANCH_OWNER;
+  process.env.CC_BRANCH_OWNER = "ananth";
+  try {
+    assert.equal(branchConforming("ananth/SCAAS-11712-thing", "SCAAS-11712"), true);
+    assert.equal(branchConforming("someone-else/SCAAS-11712-thing", "SCAAS-11712"), false);
+  } finally {
+    if (prev === undefined) delete process.env.CC_BRANCH_OWNER;
+    else process.env.CC_BRANCH_OWNER = prev;
+  }
+});
+
+test("empty CC_BRANCH_OWNER behaves as unset (the incident)", async () => {
+  const { branchConforming } = await import("./facts.ts");
+  const prev = process.env.CC_BRANCH_OWNER;
+  process.env.CC_BRANCH_OWNER = "";
+  try {
+    assert.equal(branchConforming("ananth/SCAAS-11712-per-asset-stablecoin-tandc-pt1", "SCAAS-11712"), true);
+  } finally {
+    if (prev === undefined) delete process.env.CC_BRANCH_OWNER;
+    else process.env.CC_BRANCH_OWNER = prev;
+  }
+});

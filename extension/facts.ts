@@ -302,9 +302,21 @@ async function gatherPrFacts(
 }
 
 /** <owner>/<TICKET>-<slice-or-desc> branch convention (owner from config). */
+/**
+ * Branch convention: <owner>/<TICKET>(-<kebab-description>).
+ *
+ * The owner segment is accepted by default rather than defaulted to a
+ * placeholder: an unset CC_BRANCH_OWNER used to yield `^/SCAAS-...`, which no
+ * real branch matches — so EVERY worker was flagged non-conforming, took a
+ * BRANCH_RENAME it could never satisfy, and burned 2 renames before ASK
+ * (SCAAS-11712). Set CC_BRANCH_OWNER to pin a specific owner.
+ */
 export function branchConforming(headRefName: string | null, ticket: string): boolean {
   if (!headRefName || !ticket) return false;
-  return new RegExp(`^${process.env.CC_BRANCH_OWNER ?? "owner"}/${ticket.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}(-[a-z0-9-]+)?$`).test(headRefName);
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const owner = process.env.CC_BRANCH_OWNER?.trim();
+  const ownerPart = owner ? esc(owner) : "[^/]+";
+  return new RegExp(`^${ownerPart}/${esc(ticket)}(-[a-z0-9-]+)*$`, "i").test(headRefName);
 }
 
 /**

@@ -205,16 +205,23 @@ export function decideVerdict(
   const badBranch = open.find((p) => !p.branchConforming);
   if (badBranch && !checkpoint.do_not_rename) {
     if ((checkpoint.rename_attempts ?? 0) >= 2) {
-      return {
-        verdict: "ASK",
-        reason: `branch rename attempted ${(checkpoint.rename_attempts ?? 0)}x without success`,
-        needsRender: true,
-        needsYou: {
-          priority: "P2",
-          message: `${checkpoint.worker_id}: rename loop on PR #${badBranch.num} — decide: rename via GitHub API yourself or accept the name`,
+      // Guarded: an unguarded terminal verdict re-spawns a render worker every
+      // tick (SCAAS-11712: 10 ASK renders in 2h after 2 failed renames).
+      return guarded(
+        {
+          verdict: "ASK",
+          reason: `branch rename attempted ${(checkpoint.rename_attempts ?? 0)}x without success`,
+          needsRender: true,
+          needsYou: {
+            priority: "P2",
+            message: `${checkpoint.worker_id}: rename loop on PR #${badBranch.num} — decide: rename via GitHub API yourself or accept the name`,
+          },
+          writes: { ...baseWrites(true) },
         },
-        writes: { ...baseWrites(true) },
-      };
+        checkpoint,
+        now,
+        facts,
+      );
     }
     return guarded(
       {
