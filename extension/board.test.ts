@@ -114,3 +114,36 @@ test("empty CC_BRANCH_OWNER behaves as unset (the incident)", async () => {
     else process.env.CC_BRANCH_OWNER = prev;
   }
 });
+
+// ── deterministic branch names (CC decides, the agent obeys) ───────────
+
+test("branchNameFor always uses the given owner and a short slug", async () => {
+  const { branchNameFor } = await import("./facts.ts");
+  const cases: Array<[string, string, string]> = [
+    ["SCAAS-11712", "WP: per-asset stablecoin T&C storage + API", "ananth/SCAAS-11712-per-asset-stablecoin-tc"],
+    ["SCAAS-11715", "Retail: asset-specific T&C dialogs + gating", "ananth/SCAAS-11715-asset-specific-tc-dialogs"],
+    ["SCAAS-11716", "Retail: USDC/WTGXX T&C content components", "ananth/SCAAS-11716-usdc-wtgxx-tc-content"],
+  ];
+  for (const [ticket, title, want] of cases) {
+    assert.equal(branchNameFor(ticket, title, "ananth"), want);
+  }
+});
+
+test("branch slug stays 2-6 words and never ends in a dash", async () => {
+  const { slugForBranch } = await import("./facts.ts");
+  const long = slugForBranch("qa-automation: webhooks.cc multi-account rotation pool + enterprise webhook self-heal");
+  const words = long.split("-");
+  assert.ok(words.length >= 2 && words.length <= 6, `got ${words.length} words: ${long}`);
+  assert.ok(!long.endsWith("-"));
+  assert.equal(slugForBranch(undefined), "");
+  assert.equal(slugForBranch(""), "");
+});
+
+test("delegation carries the exact branch name, not a pattern", async () => {
+  const { DELEGATE_TEMPLATE } = await import("./render.ts");
+  const tpl = DELEGATE_TEMPLATE("SCAAS-11712", "ralph", "ananth", "ananth/SCAAS-11712-per-asset-stablecoin-tc");
+  assert.ok(tpl.includes("ananth/SCAAS-11712-per-asset-stablecoin-tc"), "exact name present");
+  assert.ok(!tpl.includes("<owner>/"), "no placeholder");
+  assert.ok(!tpl.includes("<short-desc>"), "no slug pattern");
+  assert.ok(/NEVER rename/i.test(tpl), "rename warning present");
+});

@@ -316,10 +316,24 @@ async function gatherPrFacts(
  * CC_BRANCH_OWNER, then the authenticated gh user. Cached for the process.
  */
 let cachedBranchOwner: string | null | undefined;
-export async function resolveBranchOwner(): Promise<string | null> {
+/** Override hook (tests, or a host that knows the owner out of band). */
+export function setBranchOwner(owner: string | null): void {
+  cachedBranchOwner = owner;
+}
+export async function resolveBranchOwner(cwd?: string): Promise<string | null> {
   if (cachedBranchOwner !== undefined) return cachedBranchOwner;
   const env = process.env.CC_BRANCH_OWNER?.trim();
   if (env) return (cachedBranchOwner = env);
+  if (cwd) {
+    try {
+      const { readCCConfig } = await import("./state");
+      const cfg = await readCCConfig(cwd);
+      const configured = cfg.agent.branchOwner?.trim();
+      if (configured) return (cachedBranchOwner = configured);
+    } catch {
+      // fall through to gh
+    }
+  }
   try {
     const { stdout } = await execFileAsync("gh", ["api", "user", "--jq", ".login"], { timeout: 8_000 });
     const login = stdout.trim();
@@ -327,6 +341,34 @@ export async function resolveBranchOwner(): Promise<string | null> {
   } catch {
     return (cachedBranchOwner = null);
   }
+}
+
+/**
+ * A concrete, deterministic branch name: <owner>/<TICKET>-<slug>.
+ *
+ * CC hands this exact string to the agent instead of a pattern, because the
+ * pattern left every detail to the agent and it varied per PR: `ananth` vs
+ * `ananth99` vs no prefix at all, 2 to 6 word slugs, and three different slice
+ * styles (-0-, -a-, -pt1). Prose instructions are not enforceable; a value is.
+ */
+export function branchNameFor(ticket: string, title: string | undefined, owner: string): string {
+  const desc = slugForBranch(title) || "impl";
+  return `${owner}/${ticket}-${desc}`;
+}
+
+/** Kebab-case the ticket title down to a short, readable branch slug. */
+export function slugForBranch(title: string | undefined): string {
+  if (!title) return "";
+  const words = title
+    .replace(/^(?:WP|Retail|SFS|BGA|QA|qa-automation|SCaaS|SCAAS)\s*:\s*/i, "")
+    .toLowerCase()
+    .replace(/&/g, "") // "T&C" -> "TC" -> "tc", not "t-c"
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w && !/^(the|a|an|and|for|of|to|with|within|via)$/.test(w));
+  // 2-6 words is the accepted range; take up to 4 for a branch that stays readable.
+  return words.slice(0, 4).join("-").slice(0, 40).replace(/-+$/, "");
 }
 
 export function branchConforming(headRefName: string | null, ticket: string): boolean {

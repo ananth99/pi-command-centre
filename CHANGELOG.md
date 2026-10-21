@@ -12,6 +12,11 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### Deterministic branch names
+- **CC now hands the agent the exact branch name** instead of a `<owner>/<TICKET>-<2-3-word-desc>` pattern. Because the pattern was advisory, real branches came out with three different owners (`ananth`, `ananth99`, none), slugs from 2-6 words, and three slice styles (`-0-`, `-a-`, `-pt1`). A pattern isn't enforceable; a value is. `branchNameFor(ticket, title, owner)` slugs the ticket title.
+- **Owner is pinned by config**, not guessed: `agent.branchOwner` in `config.json` (falling back to `CC_BRANCH_OWNER`, then `gh api user`). Slice suffixes are specified too: `-2`, `-3`, … on the same name.
+- Slug rules: title prefix stripped (`WP:`/`Retail:`/`qa-automation:`), `&` collapsed (`T&C` → `tc`), stopwords dropped, up to 4 words. 3 tests.
+
 ### Never rename branches
 - **`BRANCH_RENAME` is gone.** The verdict now escalates to the human (`ASK`, latching `do_not_rename`) instead of telling the agent to rename. Renaming is cosmetic; the agent's implementation pushes a new branch and deletes the old one, which **closes the pull request** (upstream #892/#3315/#903). That cost us SCAAS-11150 and orphaned the 11714/11715/11716 stacks — including renaming `ananth99/SCAAS-11715-*` to `ananth99/SCAAS-11716-*`.
 - **The delegation instruction now carries a real owner.** It used to emit a bare `<owner>/<TICKET>-<desc>` placeholder while the conformance check demanded one exact string, so every branch the agent named was judged wrong. `resolveBranchOwner()` (CC_BRANCH_OWNER → `gh api user`) fills it in, and the template now says not to rename a branch that already contains the ticket.

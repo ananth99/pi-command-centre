@@ -83,7 +83,7 @@ export interface ModelTier {
 export interface CCConfig {
   models: { supervisor: ModelTier; check: ModelTier; takeover: ModelTier; nudge: ModelTier };
   wakeups: { staleMinutes: number; checkTimeoutMinutes: number };
-  agent: { name: string };
+  agent: { name: string; /** GitHub handle used as the branch owner prefix. */ branchOwner?: string };
   /** "code-verdicts": tick runs the pure decision function, spawns LLM only to
    *  render messages. "prompt-verdicts": legacy — worker LLM self-decides. */
   mode: "prompt-verdicts" | "code-verdicts";
@@ -110,6 +110,8 @@ export const DEFAULT_CC_CONFIG: CCConfig = {
   },
   wakeups: { staleMinutes: 10, checkTimeoutMinutes: 15 },
   agent: { name: "the-agent" },
+  // branchOwner intentionally unset in the template: set it to your GitHub
+  // handle (or export CC_BRANCH_OWNER) so branch names are deterministic.
   budgets: { maxRenders: 15 },
   assignedTickets: { poll: true, autoLaunch: false, maxConcurrent: 5 },
 };

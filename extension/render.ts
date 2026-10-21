@@ -10,15 +10,20 @@ export const DELEGATE_TEMPLATE = (
   ticket: string,
   agentName: string,
   branchOwner?: string | null,
+  exactBranch?: string | null,
 ): string => {
-  // The owner used to render as a bare `<owner>` placeholder while the
-  // conformance check demanded one exact string — so every branch the agent
-  // named was judged non-conforming and sent back for a rename, orphaning PRs
-  // (SCAAS-11712, 11714, 11715, 11716). Emit the real prefix instead.
+  // CC decides the branch name and hands over the literal string. It used to
+  // emit a `<owner>/<TICKET>-<2-3-word-desc>` pattern, which left every detail
+  // to the agent: owner came out as `ananth`, `ananth99` or nothing; slugs ran
+  // 2-6 words; slices were `-0-`, `-a-` or `-pt1`. A pattern is not
+  // enforceable — a value is.
   const owner = (branchOwner && branchOwner.trim()) || "<your-github-handle>";
+  const branch = (exactBranch && exactBranch.trim()) || `${owner}/${ticket}-<short-desc>`;
   return `@${agentName} please implement ${ticket} end-to-end:
 - One-sentence objective from the ticket.
-- Branch naming: EXACTLY ${owner}/${ticket}-<short-desc> (stacked slices: ${owner}/${ticket}-<slice>). Use this prefix verbatim. NEVER rename a branch that already contains ${ticket} — renaming orphans the pull request.
+- Branch naming: use EXACTLY this branch name, verbatim: ${branch}
+  Slices of a stack: suffix the same name with -2, -3, ... (e.g. ${branch}-2). Every slice keeps the ${owner}/ prefix.
+  NEVER rename a branch that already contains ${ticket} — renaming orphans the pull request.
 - Draft PR. PR-DESC CONTRACT (acceptance criteria): body ≤ 10 lines — (1) what & why in 1-2 sentences; (2) a "Ticket: ${ticket}" line; (3) ≤ 6 one-line bullets of key changes (file/component level); (4) breaking changes/rollout notes only if they exist. FORBIDDEN in the body: test evidence or CI output, screenshots, restating the diff, design-essay prose, agent/workflow narration, process checklists, 'next steps' sections.
 - COMMIT ATTRIBUTION (non-negotiable): every commit MUST carry a "Co-authored-by: <SUPERVISOR_NAME> <SUPERVISOR_EMAIL>" trailer — the Humans In The Loop gate rejects AI commits without human attribution. Fill from config or the ticket owner.
 - Single signed commit, commit header feat(<scope>):.
