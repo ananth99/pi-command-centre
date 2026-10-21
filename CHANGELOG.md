@@ -9,6 +9,11 @@
 - **Stacked PRs** — PR column shows the chain (`#984→985`, `#996 +3`), deduped.
 - **AWAITING REVIEW** section for parked workers; today's landed / merged / replies line; one-line beacon with effort breakdown; a 🆕 marker in the beacon (5 min) on *new* needs-you items — no chat-log spam.
 
+### Auto-answer
+- **`auto-answer.ts`**: when the agent is `awaitingInput`, CC reads the actual question from the Linear session, classifies it (repo/branch/process questions → auto-answer; credentials/design/approval → escalate), and spawns a render worker to reply. The human only sees QUESTION items CC genuinely can't handle.
+- NEEDS YOU table now shows the agent's actual question preview instead of the generic "ralph asked you something" text.
+- Question dedup: CC won't re-attempt the same question twice.
+
 ### Auto-launch
 - **`autoLaunchWorkers`** tick job: when `assignedTickets.autoLaunch: true`, CC automatically spawns workers for assigned tickets that are launchable (all blockers Done, state is Todo or In Progress). One launch per tick, 2-minute cooldown, up to `maxConcurrent` (default 5) active workers.
 - **Dependency-aware queue**: the Linear query now fetches `blockedBy` relations. Blocked tickets show `⏸ blocked by SCAAS-XXXX` in the queue; launchable ones show `ready`. Only launchable, untracked tickets are auto-launched.

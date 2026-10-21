@@ -23,6 +23,7 @@ import { decideVerdict } from "./verdict";
 import { buildRenderPrompt, DELEGATE_TEMPLATE } from "./render";
 import { spawnRenderRpc } from "./spawns";
 import { readAssigned } from "./assigned";
+import { tryAutoAnswer, getQuestionPreview } from "./auto-answer";
 
 const execFileAsync = promisify(execFile);
 
@@ -492,11 +493,35 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
       nodes.sort((a, b) => (a.updatedAt ?? "").localeCompare(b.updatedAt ?? ""));
       const latest = nodes[nodes.length - 1];
       if (latest) {
+        let questionPreview: string | undefined;
+        if (/awaiting/i.test(latest.status) && w.linear_issue_id) {
+          try { questionPreview = (await getQuestionPreview(w.linear_issue_id)) ?? undefined; } catch {}
+        }
         liveAgentStatus.set(w.worker_id, {
           status: latest.status,
           activityAt: latest.updatedAt,
           checkedAt: Date.now(),
+          questionPreview,
         });
+        // Auto-answer: if the agent is awaiting input, try to answer its
+        // question before surfacing it to the human.
+        if (
+          /awaiting/i.test(latest.status) &&
+          w.status === "working" &&
+          w.linear_issue_id
+        ) {
+          try {
+            const answered = await tryAutoAnswer(w, cwd);
+            if (answered) {
+              // Stamp last_nudge_at so the board's repliedRecently() suppresses
+              // the QUESTION row for 5 minutes while the agent processes.
+              w.last_nudge_at = new Date().toISOString();
+              await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+            }
+          } catch {
+            // auto-answer failed; fall through to normal QUESTION display
+          }
+        }
         // Reconcile a stale "needs you" checkpoint: if the agent is actively working
         // again, it is no longer waiting on you — move it back to In Flight.
         if (

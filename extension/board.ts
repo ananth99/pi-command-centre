@@ -48,6 +48,7 @@ export interface BoardWorker {
 export interface LiveStatus {
   status: string;
   activityAt?: string;
+  questionPreview?: string;
 }
 
 export interface NeedsYouItem {
@@ -152,7 +153,11 @@ export function deriveBoard(input: {
     if (w.status !== "working" && w.status !== "landing") continue;
     const s = live.get(w.worker_id);
     if (s && /awaiting/i.test(s.status) && !repliedRecently(w, now)) {
-      push(w, "QUESTION", `${w.agent_name ?? "The agent"} asked you something \u2014 read its latest comment on ${w.linear_issue_id ?? "the ticket"}.`, s.activityAt);
+      const preview = s.questionPreview;
+      const text = preview
+        ? `${w.agent_name ?? "The agent"} asks: ${preview}`
+        : `${w.agent_name ?? "The agent"} asked you something \u2014 read its latest comment on ${w.linear_issue_id ?? "the ticket"}.`;
+      push(w, "QUESTION", text, s.activityAt);
     }
   }
 

@@ -201,4 +201,4 @@ export async function readCCConfig(cwd: string): Promise<CCConfig> {
 /** Forgiving shorthands → real catalog ids, so "luna"/"glm" never 404. */
 
 /** Tick-level agent-session probe (no LLM): worker_id -> live Linear session status. */
-export const liveAgentStatus = new Map<string, { status: string; activityAt?: string; checkedAt: number }>();
+export const liveAgentStatus = new Map<string, { status: string; activityAt?: string; checkedAt: number; questionPreview?: string }>();
