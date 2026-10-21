@@ -507,10 +507,11 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
           questionPreview,
         });
         // Auto-answer: if the agent is awaiting input, try to answer its
-        // question before surfacing it to the human.
+        // question before surfacing it to the human. Runs on working AND
+        // stalled workers — answering the question is what un-stalls them.
         if (
           /awaiting/i.test(latest.status) &&
-          w.status === "working" &&
+          (w.status === "working" || w.status === "awaiting_approval" || w.status === "blocked") &&
           w.linear_issue_id
         ) {
           try {
@@ -519,7 +520,15 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
               // Stamp last_nudge_at so the board's repliedRecently() suppresses
               // the QUESTION row for 5 minutes while the agent processes.
               w.last_nudge_at = new Date().toISOString();
+              // Un-stall: answering the question is the fix.
+              if (w.status === "awaiting_approval" || w.status === "blocked") {
+                w.status = "working";
+                w.action = undefined;
+                w.wait_streak = 0;
+                w.summary = `Auto-answered agent question — resumed`;
+              }
               await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+              await appendEvent(cwd, { type: "worker_reconciled", worker_id: w.worker_id, to: "working", reason: "auto_answered" });
             }
           } catch {
             // auto-answer failed; fall through to normal QUESTION display
