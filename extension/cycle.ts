@@ -444,7 +444,7 @@ export async function autoCloseMergedWorkers(cwd: string): Promise<void> {
       const allTerminal = prRefs.every(
         (ref) => states[ref.num]?.state === "MERGED" || states[ref.num]?.state === "CLOSED",
       );
-      const anchor = String(w.expected_pr || w.evidence?.pr ?? "");
+      const anchor = String(w.expected_pr || (w.evidence?.pr) || "");
       const anchorNum = anchor.match(/(\d+)/)?.[1];
       const anchorState = anchorNum ? states[anchorNum] : undefined;
       if (allTerminal && anchorState?.state === "MERGED") {

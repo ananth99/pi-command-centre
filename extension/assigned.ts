@@ -66,5 +66,5 @@ export async function pollAssignedTickets(cwd: string): Promise<void> {
       launchable: allBlockersDone && LAUNCH_STATES.has(n.state.name),
     };
   });
-  await writeJson(file, { fetchedAt: new Date().toISOString(), tickets } satisfies AssignedFile);
+  await writeJson(file, { fetchedAt: new Date().toISOString(), tickets } as AssignedFile);
 }
