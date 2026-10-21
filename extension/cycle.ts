@@ -18,7 +18,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { WorkerCheckpoint } from "./types";
 import { appendEvent, ensureState, liveAgentStatus, readCCConfig, readWorkerCheckpoints, writeJson } from "./state";
-import { gatherFacts, firstUntrackedPr, discoverOpenPrsForTicket } from "./facts";
+import { gatherFacts, firstUntrackedPr, discoverOpenPrsForTicket, resolveBranchOwner } from "./facts";
 import { decideVerdict } from "./verdict";
 import { buildRenderPrompt, DELEGATE_TEMPLATE } from "./render";
 import { spawnRenderRpc } from "./spawns";
@@ -195,6 +195,7 @@ export async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
     await writeJson(checkpointPath, w);
     const isDelegate = verdict.verdict === "DELEGATE";
     const agentName = w.agent_name ?? config.agent.name;
+    const branchOwner = isDelegate ? await resolveBranchOwner().catch(() => null) : null;
     const prompt = buildRenderPrompt({
       workerId: w.worker_id,
       ticket: w.linear_issue_id,
@@ -205,7 +206,7 @@ export async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
       checkpointPath,
       eventsPath: paths.eventsFile,
       delegateTemplate: isDelegate
-        ? DELEGATE_TEMPLATE(w.linear_issue_id, agentName)
+        ? DELEGATE_TEMPLATE(w.linear_issue_id, agentName, branchOwner)
         : undefined,
     });
     try {

@@ -311,6 +311,24 @@ async function gatherPrFacts(
  * BRANCH_RENAME it could never satisfy, and burned 2 renames before ASK
  * (SCAAS-11712). Set CC_BRANCH_OWNER to pin a specific owner.
  */
+/**
+ * The GitHub handle used as the branch owner prefix. Resolution order:
+ * CC_BRANCH_OWNER, then the authenticated gh user. Cached for the process.
+ */
+let cachedBranchOwner: string | null | undefined;
+export async function resolveBranchOwner(): Promise<string | null> {
+  if (cachedBranchOwner !== undefined) return cachedBranchOwner;
+  const env = process.env.CC_BRANCH_OWNER?.trim();
+  if (env) return (cachedBranchOwner = env);
+  try {
+    const { stdout } = await execFileAsync("gh", ["api", "user", "--jq", ".login"], { timeout: 8_000 });
+    const login = stdout.trim();
+    return (cachedBranchOwner = login || null);
+  } catch {
+    return (cachedBranchOwner = null);
+  }
+}
+
 export function branchConforming(headRefName: string | null, ticket: string): boolean {
   if (!headRefName || !ticket) return false;
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

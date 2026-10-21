@@ -86,15 +86,19 @@ test("incident: parked on a broken PR (11159 arse-sitting) — landing + unsigne
   assert.equal(v.writes.status, "working");
 });
 
+// The loop guard test vehicle: any RENDER verdict that can recur while the
+// world is unchanged. BRANCH_RENAME can no longer serve (rule 5 now escalates
+// instead of renaming), so use unresolved review threads.
 const spamCase = (minsAgo: number, sess: string, activity: string) => {
   const f = facts({
-    prs: [pr({ headRefName: "SCAAS-11150-order-read", branchConforming: false })],
+    prs: [pr({ threads: [{ id: "t1", resolved: false, isBot: false }] })],
     sessionStatus: sess,
     lastActivityAt: activity,
     ciState: "unknown",
+    unresolvedThreadIds: ["t1"],
   });
   const checkpoint = cp({
-    action: "BRANCH_RENAME",
+    action: "NUDGE_THREADS",
     last_nudge_at: new Date(NOW - minsAgo * 60_000).toISOString(),
     rename_attempts: 1,
   });
@@ -125,15 +129,18 @@ test("agent acted since the nudge, is idle again, problem unchanged → STALLED"
   assert.equal(v.verdict, "STALLED");
 });
 
-test("incident: rename exhausted — after 2 attempts escalate ASK instead of renaming forever", () => {
+test("incident: off-convention branch escalates to the human, NEVER auto-renames", () => {
+  // Renaming orphans the PR (ai-agent #892/#3315/#903; 11714/11715/11716).
+  // Renaming is cosmetic, orphaning is irreversible — so CC never renames.
   const f = facts({
     prs: [pr({ headRefName: "SCAAS-11150-order-read", branchConforming: false })],
     sessionStatus: "complete",
     ciState: "approval_pending",
   });
-  const v = decideVerdict(f, cp({ rename_attempts: 3 }), NOW);
+  const v = decideVerdict(f, cp({}), NOW);
   assert.equal(v.verdict, "ASK");
-  assert.equal(v.needsRender, true);
+  assert.notEqual(v.verdict, "BRANCH_RENAME");
+  assert.equal(v.writes.do_not_rename, true, "latches so it never re-asks");
   assert.ok(v.needsYou);
 });
 
@@ -216,10 +223,11 @@ test("first run with no agent session delegates", () => {
 
 test("branch-conforming with slice suffix passes", () => {
   const f = facts({
-    prs: [pr({ headRefName: "owner/SCAAS-11159-glue" })],
+    prs: [pr({ headRefName: "ananth/SCAAS-11159-glue" })],
   });
   const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
   assert.notEqual(v.verdict, "BRANCH_RENAME");
+  assert.notEqual(v.verdict, "ASK");
 });
 
 test("render prompt: slim and obedient — no gather steps, no verdict table", () => {
@@ -243,7 +251,7 @@ test("render prompt: slim and obedient — no gather steps, no verdict table", (
 });
 
 test("render prompt: DELEGATE carries the conventions template", () => {
-  const tpl = DELEGATE_TEMPLATE("SCAAS-11159", "the-agent");
+  const tpl = DELEGATE_TEMPLATE("SCAAS-11159", "the-agent", "ananth");
   const p = buildRenderPrompt({
     workerId: "w",
     ticket: "SCAAS-11159",
@@ -256,7 +264,7 @@ test("render prompt: DELEGATE carries the conventions template", () => {
     delegateTemplate: tpl,
   });
   assert.ok(p.includes("Co-authored-by: <SUPERVISOR_NAME>"));
-  assert.ok(p.includes("<owner>/SCAAS-11159"));
+  assert.ok(p.includes("ananth/SCAAS-11159"), "renders the real branch owner");
   assert.ok(p.includes("MULTI-PR SIZING"));
 });
 

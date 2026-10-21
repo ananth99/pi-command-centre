@@ -12,6 +12,10 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### Never rename branches
+- **`BRANCH_RENAME` is gone.** The verdict now escalates to the human (`ASK`, latching `do_not_rename`) instead of telling the agent to rename. Renaming is cosmetic; the agent's implementation pushes a new branch and deletes the old one, which **closes the pull request** (upstream #892/#3315/#903). That cost us SCAAS-11150 and orphaned the 11714/11715/11716 stacks — including renaming `ananth99/SCAAS-11715-*` to `ananth99/SCAAS-11716-*`.
+- **The delegation instruction now carries a real owner.** It used to emit a bare `<owner>/<TICKET>-<desc>` placeholder while the conformance check demanded one exact string, so every branch the agent named was judged wrong. `resolveBranchOwner()` (CC_BRANCH_OWNER → `gh api user`) fills it in, and the template now says not to rename a branch that already contains the ticket.
+
 ### Agent asks are elicitations
 - **CC was blind to every question the agent asked.** The agent asks humans via `AgentActivityElicitationContent`; the reader only fetched `AgentActivityResponseContent` *and* filtered out any activity with a `sourceComment.user` (elicitations are authored by the agent), so it always returned null and auto-answer silently never fired (0 events; SCAAS-11713-716 sat STALLED for ~50 min each). Now fetches and accepts elicitations, with a deeper activity window (60 — the ask is buried behind dozens of thoughts).
 - **Impossibility is recognised, not auto-answered.** Elicitations that say "I cannot…", "unable to", "blocker", "closed with a deleted head branch", "has diverged" classify as escalate → the human sees the real blocker.

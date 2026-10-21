@@ -201,34 +201,27 @@ export function decideVerdict(
     );
   }
 
-  // ── 5. Branch naming convention (bounded: escalate after 2 attempts).
+  // ── 5. Branch naming convention — ESCALATE, never auto-rename.
+  //
+  // Renaming is cosmetic; orphaning the pull request is catastrophic and
+  // irreversible. The agent's rename implementation pushes a new branch and
+  // deletes the old one, which closes the PR (bitgo/ai-agent #892, #3315,
+  // #903; SCAAS-11150, and the orphaned stacks on 11714/11715/11716). CC used
+  // to demand renames because its own conformance check rejected every branch
+  // (empty CC_BRANCH_OWNER) — that root cause is fixed, and this rule now
+  // surfaces the rare genuine offender to the human instead of acting on it.
   const badBranch = open.find((p) => !p.branchConforming);
   if (badBranch && !checkpoint.do_not_rename) {
-    if ((checkpoint.rename_attempts ?? 0) >= 2) {
-      // Guarded: an unguarded terminal verdict re-spawns a render worker every
-      // tick (SCAAS-11712: 10 ASK renders in 2h after 2 failed renames).
-      return guarded(
-        {
-          verdict: "ASK",
-          reason: `branch rename attempted ${(checkpoint.rename_attempts ?? 0)}x without success`,
-          needsRender: true,
-          needsYou: {
-            priority: "P2",
-            message: `${checkpoint.worker_id}: rename loop on PR #${badBranch.num} — decide: rename via GitHub API yourself or accept the name`,
-          },
-          writes: { ...baseWrites(true) },
-        },
-        checkpoint,
-        now,
-        facts,
-      );
-    }
     return guarded(
       {
-        verdict: "BRANCH_RENAME",
-        reason: `PR #${badBranch.num}: branch ${badBranch.headRefName} violates <owner>/<ticket>-<desc>`,
+        verdict: "ASK",
+        reason: `PR #${badBranch.num}: branch ${badBranch.headRefName} doesn't match <owner>/${facts.ticket}-<desc>`,
         needsRender: true,
-        writes: { rename_attempts: (checkpoint.rename_attempts ?? 0) + 1, ...baseWrites(true) },
+        needsYou: {
+          priority: "P3",
+          message: `${checkpoint.worker_id}: branch name on PR #${badBranch.num} ("${badBranch.headRefName}") is off-convention — rename it yourself via the GitHub API, or accept it (CC will not rename; renaming orphans the PR)`,
+        },
+        writes: { do_not_rename: true, ...baseWrites(true) },
       },
       checkpoint,
       now,

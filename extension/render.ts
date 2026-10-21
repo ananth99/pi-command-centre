@@ -6,14 +6,24 @@
  * sequential bash calls if codemode is unavailable.
  */
 
-export const DELEGATE_TEMPLATE = (ticket: string, agentName: string): string =>
-  `@${agentName} please implement ${ticket} end-to-end:
+export const DELEGATE_TEMPLATE = (
+  ticket: string,
+  agentName: string,
+  branchOwner?: string | null,
+): string => {
+  // The owner used to render as a bare `<owner>` placeholder while the
+  // conformance check demanded one exact string — so every branch the agent
+  // named was judged non-conforming and sent back for a rename, orphaning PRs
+  // (SCAAS-11712, 11714, 11715, 11716). Emit the real prefix instead.
+  const owner = (branchOwner && branchOwner.trim()) || "<your-github-handle>";
+  return `@${agentName} please implement ${ticket} end-to-end:
 - One-sentence objective from the ticket.
-- Branch naming: <owner>/${ticket}-<2-3-word-desc> (stacked slices: <owner>/${ticket}-<slice>).
+- Branch naming: EXACTLY ${owner}/${ticket}-<short-desc> (stacked slices: ${owner}/${ticket}-<slice>). Use this prefix verbatim. NEVER rename a branch that already contains ${ticket} — renaming orphans the pull request.
 - Draft PR. PR-DESC CONTRACT (acceptance criteria): body ≤ 10 lines — (1) what & why in 1-2 sentences; (2) a "Ticket: ${ticket}" line; (3) ≤ 6 one-line bullets of key changes (file/component level); (4) breaking changes/rollout notes only if they exist. FORBIDDEN in the body: test evidence or CI output, screenshots, restating the diff, design-essay prose, agent/workflow narration, process checklists, 'next steps' sections.
 - COMMIT ATTRIBUTION (non-negotiable): every commit MUST carry a "Co-authored-by: <SUPERVISOR_NAME> <SUPERVISOR_EMAIL>" trailer — the Humans In The Loop gate rejects AI commits without human attribution. Fill from config or the ticket owner.
 - Single signed commit, commit header feat(<scope>):.
 - MULTI-PR SIZING: estimate changed lines first (tests ≈ 50-60% of a slice). If > ~500 lines, mandate a linear STACK of 2-3 PRs split on file boundaries, each ≤ ~500 lines, stacked branches, one signed commit each. Record ALL PR numbers on the ticket; the supervisor will track them.`;
+};
 
 export interface RenderPromptParams {
   workerId: string;
