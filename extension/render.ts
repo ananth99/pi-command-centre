@@ -67,7 +67,6 @@ export function buildRenderPrompt(p: RenderPromptParams): string {
     "  ATTRIBUTION_FIX → name the commit and the missing Co-authored-by supervisor trailer; the Humans In The Loop gate rejects AI commits without human attribution.",
     "  NUDGE_THREADS → instruct the agent to REPLY INLINE on each review thread URL from the facts (one reply per thread, on the thread itself). NEVER summarize answers in a top-level PR conversation comment. Never acknowledge bot comments; delete any such comments you already made.",
     "  REBASE → rebase onto master, retarget the PR base if stacked, single commit, re-sign.",
-    "  BRANCH_RENAME → use GitHub's branch rename API (gh api repos/<owner>/<repo>/branches/<old>/rename -f new_name=...), NEVER push-new-and-delete-old (that auto-closes PRs).",
     "  ASK → one focused question for the human, as specified in the verdict reason.",
     isDelegate ? "  DELEGATE → post the delegation template below as the comment (fill the one-sentence objective from the ticket):" : "",
     isDelegate ? p.delegateTemplate ?? "" : "",

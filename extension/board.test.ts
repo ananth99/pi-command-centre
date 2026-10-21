@@ -147,3 +147,45 @@ test("delegation carries the exact branch name, not a pattern", async () => {
   assert.ok(!tpl.includes("<short-desc>"), "no slug pattern");
   assert.ok(/NEVER rename/i.test(tpl), "rename warning present");
 });
+
+// ── structural: CC can never instruct a rename again ───────────────────
+
+test("no module tells the agent to rename a branch", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Files that produce text sent to the agent.
+  for (const f of ["render.ts", "prompts.ts"]) {
+    const src = await readFile(`${here}/${f}`, "utf8");
+    assert.ok(!src.includes("BRANCH_RENAME"), `${f} must not mention BRANCH_RENAME`);
+    // Target the instruction phrasings that actually caused the orphaning.
+    const banned = [
+      /rename branch to the convention/i,
+      /instruct it to use GitHub's branch rename API/i,
+      /branches\/<old>\/rename/i,
+      /-f new_name=/i,
+      /→\s*BRANCH_RENAME/,
+    ];
+    for (const line of src.split("\n")) {
+      for (const b of banned) {
+        assert.ok(!b.test(line), `${f}: rename instruction reintroduced → ${line.trim().slice(0, 140)}`);
+      }
+    }
+  }
+});
+
+test("BRANCH_RENAME is not a producible verdict", async () => {
+  const { decideVerdict } = await import("./verdict.ts");
+  // An off-convention branch must escalate, never rename.
+  const f: never = {
+    workerId: "w", ticket: "SCAAS-1", sessionStatus: "complete", lastActivityAt: "2026-01-01T00:00:00Z",
+    prs: [{ num: "1", url: "u", state: "OPEN", mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED",
+      headRefName: "who/SCAAS-1-bad", branchConforming: false, commits: [], commitOk: true, hitlGateOk: false, threads: [] }],
+    anchorNum: "1", ciState: "approval_pending", unresolvedThreadIds: [],
+  } as never;
+  const cp = { worker_id: "w", status: "working", linear_issue_id: "SCAAS-1", expected_pr: "#1" } as never;
+  const v = decideVerdict(f, cp);
+  assert.notEqual(v.verdict as string, "BRANCH_RENAME");
+  assert.equal(v.verdict, "ASK");
+});

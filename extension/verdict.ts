@@ -26,7 +26,6 @@ export type VerdictName =
   | "AUTO_CLOSE"
   | "SIGN_SQUASH"
   | "ATTRIBUTION_FIX"
-  | "BRANCH_RENAME"
   | "FIX_CI"
   | "NUDGE_SPECIFIC"
   | "NUDGE_THREADS"

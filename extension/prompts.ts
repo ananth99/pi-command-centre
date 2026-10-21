@@ -93,7 +93,7 @@ export function buildCheckWorkerPrompt(p: {
     : "";
   const branchRenameVerdict = p.doNotRename
     ? "- branch non-conforming → DO NOT rename or delete the branch (do_not_rename is set for this worker — a prior rename attempt broke this PR). Just note it in the checkpoint summary and move on."
-    : "- branch non-conforming → BRANCH_RENAME: comment @mentioning the agent: rename branch to the convention before merge — instruct it to use GitHub's branch rename API (gh api repos/<owner>/<repo>/branches/<old>/rename -f new_name=...), NEVER push-new-and-delete-old (that auto-closes the PR). If checkpoint.rename_attempts >= 1 already, do NOT retry — escalate to BLOCKED instead.";
+    : "- branch non-conforming → DO NOT rename and DO NOT ask the agent to rename. The agent's rename implementation pushes a new branch and deletes the old one, which CLOSES the pull request (upstream #892/#3315/#903). Note it in the checkpoint summary and escalate to the human instead.";
   return [
     `You are a SINGLE-SHOT supervisor wake-up. Worker id: ${p.workerId}.`,
     `You supervise Linear agent "${p.agentName}" on ticket ${p.ticket}. Repo: ${p.repoPath}.`,

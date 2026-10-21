@@ -162,7 +162,7 @@ export async function getWorkerLiveLine(workerId: string): Promise<string | null
 
 /** Tick-level agent-session probe (no LLM): worker_id -> live Linear session status. */
 
-const FIX_VERDICTS = new Set(["FIX_CI", "REBASE", "NUDGE_THREADS", "NUDGE_SPECIFIC", "SIGN_SQUASH", "ATTRIBUTION_FIX", "BRANCH_RENAME", "DELEGATE"]);
+const FIX_VERDICTS = new Set(["FIX_CI", "REBASE", "NUDGE_THREADS", "NUDGE_SPECIFIC", "SIGN_SQUASH", "ATTRIBUTION_FIX", "DELEGATE"]);
 
 type Paint = (s: string) => string;
 const plain: Paint = (s) => s;
