@@ -535,8 +535,17 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
       nodes.sort((a, b) => (a.updatedAt ?? "").localeCompare(b.updatedAt ?? ""));
       const latest = nodes[nodes.length - 1];
       if (latest) {
+        // Surface the agent's actual ask on any worker that needs the human —
+        // awaiting, stalled or blocked. "ralph asked you something" is useless;
+        // the elicitation text is what you act on.
         let questionPreview: string | undefined;
-        if (/awaiting/i.test(latest.status) && w.linear_issue_id) {
+        if (
+          w.linear_issue_id &&
+          (/awaiting/i.test(latest.status) ||
+            w.status === "blocked" ||
+            w.status === "awaiting_approval" ||
+            w.action === "STALLED")
+        ) {
           try { questionPreview = (await getQuestionPreview(w.linear_issue_id)) ?? undefined; } catch {}
         }
         liveAgentStatus.set(w.worker_id, {

@@ -37,8 +37,11 @@ async function linearApi(query: string): Promise<unknown> {
 
 /** Read the latest agent question from the ticket's most recent session. */
 export async function readLatestQuestion(ticketId: string): Promise<QuestionInfo | null> {
+  // ElicitationContent is how the agent ACTUALLY asks a human question —
+  // the render prompt's "question" class never sees it, and the response-only
+  // filter silently returned null, so auto-answer never fired (SCAAS-11713-716).
   const data = (await linearApi(
-    `query { issue(id:"${ticketId}") { agentSessions(first:5, orderBy:updatedAt) { nodes { id status updatedAt activities(last:15) { nodes { createdAt content { __typename ... on AgentActivityResponseContent { body } ... on AgentActivityPromptContent { body } ... on AgentActivityErrorContent { body } } sourceComment { user { name } } } } } } } }`,
+    `query { issue(id:"${ticketId}") { agentSessions(first:5, orderBy:updatedAt) { nodes { id status updatedAt activities(last:60) { nodes { createdAt content { __typename ... on AgentActivityResponseContent { body } ... on AgentActivityElicitationContent { body } ... on AgentActivityPromptContent { body } ... on AgentActivityErrorContent { body } } sourceComment { user { name } } } } } } } }`,
   )) as {
     data?: {
       issue?: {
@@ -65,14 +68,16 @@ export async function readLatestQuestion(ticketId: string): Promise<QuestionInfo
   if (!awaiting) return null;
 
   const activities = awaiting.activities?.nodes ?? [];
-  // Find the last response from the agent (not from a human prompt)
-  const agentResponses = activities.filter(
+  // The agent's ask is either a Response or an Elicitation. Elicitations are
+  // authored by the agent itself (sourceComment.user = the agent), so the old
+  // `!sourceComment.user` filter would drop them even if they were fetched.
+  const asks = activities.filter(
     (a) =>
-      a.content?.__typename === "AgentActivityResponseContent" &&
-      a.content.body &&
-      !a.sourceComment?.user,
+      (a.content?.__typename === "AgentActivityResponseContent" ||
+        a.content?.__typename === "AgentActivityElicitationContent") &&
+      a.content.body,
   );
-  const last = agentResponses[agentResponses.length - 1];
+  const last = asks[asks.length - 1];
   if (!last?.content?.body) return null;
 
   return {
@@ -95,6 +100,20 @@ export async function classifyQuestion(
   // Questions about credentials, secrets, design decisions, approval → escalate.
 
   const q = question.toLowerCase();
+  // Impossibility first: an explicit "I cannot" is a BLOCKED_IMPOSSIBILITY for
+  // the human (the 5-day orbit class), never something to auto-answer around.
+  const impossiblePatterns = [
+    /\bi cannot\b/,
+    /\bcan'?t (retrieve|access|find|reopen|resolve)\b/,
+    /\bunable to\b/,
+    /\bblocker\b/,
+    /cannot be (reopened|retrieved|accessed|resolved)/,
+    /(closed|deleted) (with a )?(deleted )?head branch/,
+    /has diverged/,
+  ];
+  for (const p of impossiblePatterns) {
+    if (p.test(q)) return { classification: "escalate", confidence: 0.9 };
+  }
   const escalatePatterns = [
     /credential|secret|token|password|api.?key/,
     /approv|permission|authoriz/,

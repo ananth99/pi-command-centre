@@ -12,6 +12,11 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### Agent asks are elicitations
+- **CC was blind to every question the agent asked.** The agent asks humans via `AgentActivityElicitationContent`; the reader only fetched `AgentActivityResponseContent` *and* filtered out any activity with a `sourceComment.user` (elicitations are authored by the agent), so it always returned null and auto-answer silently never fired (0 events; SCAAS-11713-716 sat STALLED for ~50 min each). Now fetches and accepts elicitations, with a deeper activity window (60 — the ask is buried behind dozens of thoughts).
+- **Impossibility is recognised, not auto-answered.** Elicitations that say "I cannot…", "unable to", "blocker", "closed with a deleted head branch", "has diverged" classify as escalate → the human sees the real blocker.
+- **NEEDS YOU shows the agent's own words.** BLOCKED/STALLED rows now render the elicitation text (`agent asked: …`) instead of "waiting on your reply to the agent".
+
 ### Branch conformance
 - **Every worker was being flagged as a badly-named branch.** `branchConforming` interpolated `CC_BRANCH_OWNER ?? "owner"`; with the variable unset *or empty* the pattern became `^/SCAAS-...`, which no branch matches. Result: each worker took a `BRANCH_RENAME` it could never satisfy, burned 2 attempts, then escalated to a repeating `ASK` (SCAAS-11712: 10 ASK renders in 2h). The owner segment is now accepted by default (`[^/]+`); set `CC_BRANCH_OWNER` to pin a specific owner. 3 regression tests.
 - **Unguarded terminal verdicts.** The `rename-exhausted → ASK` return was not wrapped in `guarded()`, so it re-spawned a render worker every tick. Now guarded.

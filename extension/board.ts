@@ -163,14 +163,19 @@ export function deriveBoard(input: {
 
   for (const w of workers) {
     if (claimed.has(w.worker_id)) continue;
+    // The agent's own ask beats our paraphrase of it: an elicitation saying
+    // "raise the sandbox memory limit above 8 GiB" is actionable in a way that
+    // "stalled — waiting on your reply to the agent" is not.
+    const ask = live.get(w.worker_id)?.questionPreview;
+    const fallback = (d: string) => (ask ? `agent asked: ${ask}` : d);
     if (w.status === "blocked") {
-      push(w, "BLOCKED", oneLine(w.blocker || w.summary || w.objective || "blocked"), w.updated_at);
+      push(w, "BLOCKED", oneLine(fallback(w.blocker || w.summary || w.objective || "blocked")), w.updated_at);
     } else if (w.status === "awaiting_approval") {
       const stalled = w.action === "STALLED";
       push(
         w,
         stalled ? "STALLED" : "APPROVE",
-        oneLine(w.proposed_action || w.summary || w.objective || (stalled ? "stalled" : "ready for you")),
+        oneLine(fallback(w.proposed_action || w.summary || w.objective || (stalled ? "stalled" : "ready for you"))),
         w.updated_at,
       );
     }
