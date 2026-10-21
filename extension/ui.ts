@@ -23,6 +23,7 @@ import {
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { WorkerStatus } from "./types";
 import {
   deriveBoard,
@@ -41,7 +42,7 @@ import {
   type Why,
 } from "./board";
 import { readAssigned } from "./assigned";
-import { appendEvent, ensureState, getPaths, liveAgentStatus, normalizePrRef, readJson, readWorkerCheckpoints } from "./state";
+import { appendEvent, ensureState, getActiveController, getPaths, liveAgentStatus, normalizePrRef, readJson, readWorkerCheckpoints, writeJson } from "./state";
 
 const execFileAsync = promisify(execFile);
 
@@ -475,6 +476,28 @@ export async function buildBeaconLines(cwd: string, fresh: string[] = []): Promi
   return [parts.join(" \u00b7 ")];
 }
 
+interface BeaconCache {
+  line: string;
+  writtenAt: number;
+}
+
+const BEACON_STALE_MS = 30_000;
+
+/** Controller writes the beacon; every session reads it. */
+export async function writeBeaconCache(cwd: string, fresh: string[] = []): Promise<void> {
+  const paths = await ensureState(cwd);
+  const beacon = await buildBeaconLines(cwd, fresh);
+  const cache: BeaconCache = { line: beacon[0] ?? "", writtenAt: Date.now() };
+  await writeJson(join(paths.root, "beacon.json"), cache);
+}
+
+async function readBeaconCache(cwd: string): Promise<string | null> {
+  const paths = await ensureState(cwd);
+  const cache = await readJson<BeaconCache>(join(paths.root, "beacon.json"), { line: "", writtenAt: 0 });
+  if (!cache.line || Date.now() - cache.writtenAt > BEACON_STALE_MS) return null;
+  return cache.line;
+}
+
 export async function renderDashboardWidget(ctx: ExtensionCommandContext) {
   const key = ctx.sessionManager.getSessionId();
   if (dashboardHiddenSessions.has(key)) {
@@ -482,10 +505,34 @@ export async function renderDashboardWidget(ctx: ExtensionCommandContext) {
     return;
   }
   applyTheme(ctx.ui.theme);
-  const { board } = await loadBoard(ctx.cwd);
-  const fresh = freshItems(key, board.needsYou);
-  const beacon = await buildBeaconLines(ctx.cwd, fresh);
-  ctx.ui.setWidget("command-centre-dashboard", beacon);
+
+  // Check if this session is the controller
+  const active = await getActiveController(ctx.cwd);
+  const isController = active?.sessionId === key;
+
+  let line: string;
+  if (isController) {
+    const { board } = await loadBoard(ctx.cwd);
+    const fresh = freshItems(key, board.needsYou);
+    const beacon = await buildBeaconLines(ctx.cwd, fresh);
+    line = beacon[0] ?? "";
+    // Write to disk so other sessions read the same line
+    const paths = await ensureState(ctx.cwd);
+    await writeJson(join(paths.root, "beacon.json"), { line, writtenAt: Date.now() } satisfies BeaconCache).catch(() => {});
+  } else {
+    // Reader: use the controller's cached beacon
+    const cached = await readBeaconCache(ctx.cwd);
+    if (cached) {
+      line = cached;
+    } else {
+      // Cache stale or missing — compute our own as fallback
+      const beacon = await buildBeaconLines(ctx.cwd);
+      line = beacon[0] ?? "";
+    }
+  }
+
+  const tag = isController ? " \u{1F39B} ctrl" : " \u{1F441} reader";
+  ctx.ui.setWidget("command-centre-dashboard", [line + tag]);
 }
 
 
