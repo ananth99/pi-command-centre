@@ -33,6 +33,40 @@ const execFileAsync = promisify(execFile);
  * state verdicts DIRECTLY (no LLM), spawn the render worker only when the
  * verdict needs a message composed.
  */
+/** Throttle the terminal-state check: at most one gh sweep per worker per 5 min. */
+const prTerminalChecked = new Map<string, number>();
+
+/**
+ * True when every PR the worker tracks is CLOSED or MERGED. Signals a reroll:
+ * the work moved to a fresh stack and the linkage must be re-discovered.
+ */
+async function allTrackedPrsTerminal(w: WorkerCheckpoint): Promise<boolean> {
+  const refs = [...new Set([...(w.scan_prs ?? []), w.expected_pr, w.evidence?.pr].filter(Boolean))] as string[];
+  if (!refs.length) return false;
+  const prev = prTerminalChecked.get(w.worker_id);
+  if (prev && Date.now() - prev < 5 * 60_000) return false;
+  prTerminalChecked.set(w.worker_id, Date.now());
+  const repo = w.evidence?.repo;
+  for (const ref of refs) {
+    const num = ref.match(/(\d+)/)?.[1];
+    if (!num) continue;
+    try {
+      const args = ["pr", "view", num, "--json", "state"];
+      const { stdout } = await execFileAsync("gh", args, {
+        cwd: repo,
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
+      const state = (JSON.parse(stdout) as { state?: string }).state;
+      if (state !== "CLOSED" && state !== "MERGED") return false;
+    } catch {
+      // PR unreadable (deleted/renumbered) — treat as terminal, other refs decide
+      continue;
+    }
+  }
+  return true;
+}
+
 export async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
   const config = await readCCConfig(ctx.cwd);
   const checkpoints = await readWorkerCheckpoints(ctx.cwd);
@@ -52,24 +86,29 @@ export async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
     // v3 PR-discovery backfill: a worker launched without PR linkage is blind
     // (render workers never gather). Discover the ticket's open PRs once and
     // persist the linkage; highest PR number = stack top (merge-retire anchor).
-    if (
-      !w.scan_prs?.length &&
-      !w.expected_pr &&
-      !w.evidence?.pr &&
-      w.linear_issue_id &&
-      w.evidence?.repo
-    ) {
+    //
+    // Re-discovery (reroll guard): a stack can be CLOSED and rerolled as a new
+    // set of PRs (SCAAS-11445: #10208-210 closed, rerolled #10778-781). The
+    // worker then points at dead PRs forever and is both blind and immortal.
+    // If every tracked PR is terminal, look for the ticket's current open PRs.
+    const needsDiscovery =
+      (!w.scan_prs?.length && !w.expected_pr && !w.evidence?.pr) ||
+      (!!w.scan_prs?.length && (await allTrackedPrsTerminal(w)));
+    if (needsDiscovery && w.linear_issue_id && w.evidence?.repo) {
       try {
         const found = await discoverOpenPrsForTicket(w.linear_issue_id, w.evidence.repo);
         if (found.length) {
           const top = found.reduce((a, b) => (Number(b.number) > Number(a.number) ? b : a));
+          const prev = w.scan_prs ?? [];
+          const rerolled = prev.length > 0 && !prev.some((p) => found.some((f) => f.url === p));
           w.scan_prs = found.map((f) => f.url);
           w.expected_pr = `#${top.number}`;
           w.evidence.pr = top.url;
           await appendEvent(ctx.cwd, {
-            type: "prs_discovered",
+            type: rerolled ? "prs_rerolled" : "prs_discovered",
             worker_id: w.worker_id,
             prs: w.scan_prs,
+            ...(rerolled ? { previous_prs: prev } : {}),
           });
         }
       } catch {

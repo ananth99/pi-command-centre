@@ -12,6 +12,9 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### Reroll guard
+- **Blind-and-immortal workers are now impossible.** If every PR a worker tracks is CLOSED (not merged), CC re-discovers the ticket's current open PRs and repoints the worker (event `prs_rerolled`). Previously discovery ran once, so a closed-and-rerolled stack (SCAAS-11445: #10208-210 closed → rerolled #10778-781) left the worker pointing at dead PRs forever — it could never land and never retire. Throttled to one `gh` sweep per worker per 5 minutes.
+
 ### Auto-answer
 - **`auto-answer.ts`**: when the agent is `awaitingInput`, CC reads the actual question from the Linear session, classifies it (repo/branch/process questions → auto-answer; credentials/design/approval → escalate), and spawns a render worker to reply. The human only sees QUESTION items CC genuinely can't handle.
 - NEEDS YOU table now shows the agent's actual question preview instead of the generic "ralph asked you something" text.
