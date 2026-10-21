@@ -10,6 +10,7 @@
  *   autoCloseMergedWorkers  retire on merge; resume parked workers on approval
  *   maybeReviveForNewPRs    a done worker's ticket gained a new PR -> resurrect
  *   reapStaleRenderSessions kill zombie zmx sessions older than the timeout
+ *   autoLaunchWorkers       auto-launch workers for launchable assigned tickets
  */
 
 import { join } from "node:path";
@@ -21,6 +22,7 @@ import { gatherFacts, firstUntrackedPr, discoverOpenPrsForTicket } from "./facts
 import { decideVerdict } from "./verdict";
 import { buildRenderPrompt, DELEGATE_TEMPLATE } from "./render";
 import { spawnRenderRpc } from "./spawns";
+import { readAssigned } from "./assigned";
 
 const execFileAsync = promisify(execFile);
 
@@ -695,4 +697,67 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
       }
     }
   }
+}
+
+
+// ── Auto-launch: spawn workers for launchable assigned tickets ──────────
+
+let lastAutoLaunchAt = 0;
+const AUTO_LAUNCH_COOLDOWN_MS = 2 * 60_000;
+
+export async function autoLaunchWorkers(cwd: string): Promise<void> {
+  const config = await readCCConfig(cwd);
+  if (!config.assignedTickets.autoLaunch) return;
+  if (Date.now() - lastAutoLaunchAt < AUTO_LAUNCH_COOLDOWN_MS) return;
+
+  const checkpoints = await readWorkerCheckpoints(cwd);
+  const working = checkpoints.filter(
+    (w) => w.status === "working" || w.status === "landing" || w.status === "awaiting_approval",
+  );
+  if (working.length >= config.assignedTickets.maxConcurrent) return;
+
+  const assigned = await readAssigned(cwd);
+  const tracked = new Set(checkpoints.map((w) => w.linear_issue_id).filter(Boolean));
+  const candidates = assigned
+    .filter((t) => t.launchable && !tracked.has(t.id))
+    .sort(
+      (a, b) =>
+        (a.priority || 5) - (b.priority || 5) ||
+        (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"),
+    );
+
+  const next = candidates[0];
+  if (!next) return;
+
+  const workerId = `${config.agent.name}-${next.id.split("-").pop()}`;
+  const paths = await ensureState(cwd);
+  const checkpointPath = join(paths.workersDir, `${workerId}.json`);
+
+  const checkpoint: WorkerCheckpoint = {
+    worker_id: workerId,
+    status: "working",
+    objective: next.title,
+    summary: `Auto-launched for ${next.id}: ${next.title}`,
+    expected_pr: undefined,
+    evidence: { dashboard_links: [] },
+    confidence: "medium",
+    risk: "medium",
+    updated_at: new Date().toISOString(),
+    linear_issue_id: next.id,
+    agent_name: config.agent.name,
+    action: undefined,
+    wait_streak: 0,
+    render_count: 0,
+  };
+
+  await writeJson(checkpointPath, checkpoint);
+  await appendEvent(cwd, {
+    type: "worker_launched",
+    worker_id: workerId,
+    ticket: next.id,
+    source: "auto_launch",
+    title: next.title,
+  });
+
+  lastAutoLaunchAt = Date.now();
 }

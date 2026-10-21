@@ -190,7 +190,11 @@ export async function readCCConfig(cwd: string): Promise<CCConfig> {
     agent: { ...DEFAULT_CC_CONFIG.agent, ...(loaded.agent ?? {}) },
     mode: loaded.mode === "code-verdicts" ? "code-verdicts" : "prompt-verdicts",
     budgets: { ...DEFAULT_CC_CONFIG.budgets, ...(loaded.budgets ?? {}) },
-    assignedTickets: { poll: loaded.assignedTickets?.poll !== false },
+    assignedTickets: {
+      poll: loaded.assignedTickets?.poll !== false,
+      autoLaunch: loaded.assignedTickets?.autoLaunch === true,
+      maxConcurrent: loaded.assignedTickets?.maxConcurrent ?? 5,
+    },
   };
 }
 

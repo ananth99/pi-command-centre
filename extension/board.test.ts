@@ -42,10 +42,21 @@ test("PR chain + dedupe", () => {
 });
 
 test("queue = assigned minus tracked, sorted by priority then due; overdue counted", () => {
-  const t = (id: string, priority: number, dueDate: string | null) => ({ id, title: id, state: "Todo", priority, dueDate, estimate: null, project: null });
+  const t = (id: string, priority: number, dueDate: string | null, blockedBy: any[] = []) => ({ id, title: id, state: "Todo", priority, dueDate, estimate: null, project: null, blockedBy, launchable: blockedBy.length === 0 || blockedBy.every((b: any) => b.done) });
   const b = board([w({ linear_issue_id: "T-9" })], new Map(), [t("T-9", 1, null), t("A", 3, null), t("B", 1, "2026-10-20"), t("C", 1, "2026-10-01")]);
   assert.deepEqual(b.queue.map((q) => q.id), ["C", "B", "A"]);
   assert.equal(b.overdue, 1);
+});
+
+test("blocked tickets are not launchReady", () => {
+  const t = (id: string, priority: number, dueDate: string | null, blockedBy: any[] = []) => ({ id, title: id, state: "Todo", priority, dueDate, estimate: null, project: null, blockedBy, launchable: blockedBy.length === 0 || blockedBy.every((b: any) => b.done) });
+  const b = board([], new Map(), [
+    t("A", 1, null, [{ id: "X", done: false }]),
+    t("B", 1, null, [{ id: "X", done: true }]),
+    t("C", 2, null),
+  ]);
+  assert.deepEqual(b.launchReady.map((q) => q.id), ["B", "C"]);
+  assert.equal(b.queue.length, 3);
 });
 
 test("oneLine cuts at a boundary", () => {

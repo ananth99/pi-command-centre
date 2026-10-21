@@ -91,7 +91,13 @@ export interface CCConfig {
    *  Exhausted worker → BLOCKED + surfaced to the human. Human reply resets. */
   budgets: { maxRenders: number };
   /** Poll the human's assigned Linear tickets into the console queue. */
-  assignedTickets: { poll: boolean };
+  assignedTickets: {
+    poll: boolean;
+    /** Auto-launch workers for launchable assigned tickets. Default false. */
+    autoLaunch: boolean;
+    /** Max concurrent working workers (auto-launch stops at this cap). */
+    maxConcurrent: number;
+  };
 }
 
 
@@ -105,5 +111,5 @@ export const DEFAULT_CC_CONFIG: CCConfig = {
   wakeups: { staleMinutes: 10, checkTimeoutMinutes: 15 },
   agent: { name: "the-agent" },
   budgets: { maxRenders: 15 },
-  assignedTickets: { poll: true },
+  assignedTickets: { poll: true, autoLaunch: false, maxConcurrent: 5 },
 };

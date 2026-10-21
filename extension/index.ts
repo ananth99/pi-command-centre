@@ -18,7 +18,7 @@ import type { WorkerCheckpoint } from "./types";
 import { readCCConfig, readWorkerCheckpoints, setActiveController, getActiveController, clearActiveController, appendEvent, ensureState } from "./state";
 import { renderDashboardWidget, dashboardHiddenSessions, blockedControllerSessions, commandCentreModeSessions, refreshTimers } from "./ui";
 import { pollAssignedTickets } from "./assigned";
-import { runVerdictCycle, maybeSpawnCheckWorkers, probeAgentSessions, autoCloseMergedWorkers, maybeReviveForNewPRs, reapStaleRenderSessions } from "./cycle";
+import { runVerdictCycle, maybeSpawnCheckWorkers, probeAgentSessions, autoCloseMergedWorkers, maybeReviveForNewPRs, reapStaleRenderSessions, autoLaunchWorkers } from "./cycle";
 import { doReply, launchHotkey, replyHotkey, closeHotkey, actHotkey, inspectHotkey } from "./actions";
 import { openConsole } from "./ui";
 
@@ -217,6 +217,7 @@ export default function commandCentreExtension(pi: ExtensionAPI) {
         await autoCloseMergedWorkers(ctx.cwd).catch(() => {});
         await maybeReviveForNewPRs(ctx.cwd).catch(() => {});
         await reapStaleRenderSessions().catch(() => {});
+        await autoLaunchWorkers(ctx.cwd).catch(() => {});
       })().catch((e: unknown) => {
         if (isStaleCtx(e)) killTick();
       });

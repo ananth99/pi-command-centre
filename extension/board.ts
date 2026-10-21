@@ -8,6 +8,11 @@
 
 export type Why = "QUESTION" | "BLOCKED" | "STALLED" | "APPROVE";
 
+export interface Blocker {
+  id: string;
+  done: boolean;
+}
+
 export interface AssignedTicket {
   id: string;
   title: string;
@@ -16,6 +21,8 @@ export interface AssignedTicket {
   dueDate: string | null;
   estimate: number | null;
   project: string | null;
+  blockedBy: Blocker[];
+  launchable: boolean;
 }
 
 export interface BoardWorker {
@@ -63,6 +70,8 @@ export interface Board {
   queue: AssignedTicket[];
   overdue: number;
   dormant: number;
+  /** Tickets ready to auto-launch (launchable, untracked, in a launch state). */
+  launchReady: AssignedTicket[];
 }
 
 const WHY_ORDER: Record<Why, number> = { QUESTION: 0, BLOCKED: 1, STALLED: 2, APPROVE: 3 };
@@ -74,7 +83,8 @@ const EFFORT: Record<Why, { label: string; rank: number; doIt: string }> = {
   BLOCKED: { label: "\u{1F9F1} 30m+", rank: 2, doIt: "alt+i inspect, fix by hand" },
 };
 
-export function normalizePr(ref: string): string {
+export function normalizePr(ref: unknown): string {
+  if (typeof ref !== "string") return ref == null ? "" : `#${ref}`;
   const t = ref.trim();
   const url = t.match(/\/pull\/(\d+)/i);
   if (url) return `#${url[1]}`;
@@ -184,7 +194,8 @@ export function deriveBoard(input: {
   const today = new Date(now).toISOString().slice(0, 10);
   const overdue = queue.filter((t) => t.dueDate && t.dueDate < today).length;
 
-  return { needsYou, inFlight, awaitingReview, queue, overdue, dormant: active.length - inFlight.length };
+  const launchReady = queue.filter((t) => t.launchable);
+  return { needsYou, inFlight, awaitingReview, queue, overdue, dormant: active.length - inFlight.length, launchReady };
 }
 
 export function fmtDue(due: string | null, now: number): { text: string; level: "none" | "ok" | "soon" | "overdue" } {

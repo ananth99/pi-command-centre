@@ -422,7 +422,10 @@ export function formatConsole(s: ConsoleSnap, width: number): string[] {
           const dueText = due.level === "overdue" ? tone.red(due.text) : due.level === "soon" ? tone.amber(due.text) : due.text;
           const pri = PRIORITY_LABEL[t.priority] ?? "-";
           const est = t.estimate != null ? ` \u00b7 est ${t.estimate}` : "";
-          return [`${t.id}\n${tone.dim(pri)}${tone.dim(est)}`, shortProject(t.project), dueText, t.title];
+          const blocked = t.blockedBy?.length && !t.launchable;
+          const blockerIds = blocked ? t.blockedBy.filter((b: {done:boolean}) => !b.done).map((b: {id:string}) => b.id).join(", ") : "";
+          const status = blocked ? tone.dim(`\u23F8 blocked by ${blockerIds}`) : t.launchable ? tone.green("ready") : tone.dim(t.state);
+          return [`${t.id}\n${tone.dim(pri)}${tone.dim(est)}`, shortProject(t.project), dueText, `${t.title}\n${status}`];
         }),
       ),
     );
