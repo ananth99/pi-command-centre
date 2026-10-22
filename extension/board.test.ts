@@ -189,3 +189,40 @@ test("BRANCH_RENAME is not a producible verdict", async () => {
   assert.notEqual(v.verdict as string, "BRANCH_RENAME");
   assert.equal(v.verdict, "ASK");
 });
+
+// ── repo slugs (PR numbers are per-repo, so #992 alone is ambiguous) ────
+
+test("shortRepo resolves plain checkouts and worktrees", async () => {
+  const { shortRepo } = await import("./board.ts");
+  const cases: Array<[string | null, string]> = [
+    ["/Users/a/BitGo/stablecoin-fungibility-service", "sfs"],
+    ["/Users/a/BitGo/bitgo-retail", "retail"],
+    ["/Users/a/BitGo/bitgo-ui", "ui"],
+    ["/Users/a/BitGo/bitgo-microservices", "microservices"],
+    ["/Users/a/BitGo/usd-tokenization-service", "uts"],
+    ["/Users/a/BitGo/client-admin", "client-admin"],
+    // worktrees: the worktree name is NOT the repo
+    ["/Users/a/BitGo/bitgo-ui-worktree/scaas-11409-wlf", "ui"],
+    ["/Users/a/BitGo/qa-automation-worktree/scaas-11576", "qa"],
+    ["/Users/a/BitGo/bitgo-retail-worktree/SCAAS-11445", "retail"],
+    [null, ""],
+    [undefined, ""],
+  ];
+  for (const [input, want] of cases) {
+    assert.equal(shortRepo(input), want, `${input} → ${want}`);
+  }
+});
+
+test("needs-you items carry a repo slug", async () => {
+  const { deriveBoard } = await import("./board.ts");
+  const b = deriveBoard({
+    workers: [
+      { worker_id: "w1", status: "blocked", linear_issue_id: "SCAAS-1", blocker: "nope",
+        evidence: { repo: "/Users/a/BitGo/stablecoin-fungibility-service" }, updated_at: "2026-01-01T00:00:00Z" },
+    ],
+    live: new Map(),
+    assigned: [],
+    now: Date.parse("2026-01-01T00:10:00Z"),
+  });
+  assert.equal(b.needsYou[0]?.repo, "sfs");
+});

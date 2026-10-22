@@ -12,6 +12,12 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### Repo slugs in the tables
+- PR numbers are per-repo, so `#992` alone was ambiguous across sfs/retail/ui/microservices. NEEDS YOU, AWAITING REVIEW and IN FLIGHT now show a short repo slug beside the PR chain: `SCAAS-11445` / `retail #10781 +3`. `shortRepo()` handles both plain checkouts and worktrees (`BitGo/bitgo-ui-worktree/<name>` → `ui`, not the worktree name).
+
+### Fixed
+- **The assigned-ticket queue was frozen for 24h.** Adding `relations { relatedIssue { state } }` to the poll pushed the query past Linear's 10000 complexity budget (measured ~17000 at `first:100`), so `pollAssignedTickets` failed every tick and `assigned.json` went stale — silently, because the failure was swallowed. Now pages at `first:50` with a fallback that re-queries without relations, so a schema or complexity problem degrades the queue instead of freezing it (and marks nothing launchable on partial data).
+
 ### Deterministic branch names
 - **The rename path is deleted, not just avoided.** `BRANCH_RENAME` is gone from the verdict union, from the render prompt's shape list, and from every module that produces text sent to the agent. Two structural tests lock it: no module may contain a rename instruction, and an off-convention branch must resolve to `ASK` (never `BRANCH_RENAME`). Removing the constant means a future edit cannot accidentally revive it — the type no longer exists.
 - **CC now hands the agent the exact branch name** instead of a `<owner>/<TICKET>-<2-3-word-desc>` pattern. Because the pattern was advisory, real branches came out with three different owners (`ananth`, `ananth99`, none), slugs from 2-6 words, and three slice styles (`-0-`, `-a-`, `-pt1`). A pattern isn't enforceable; a value is. `branchNameFor(ticket, title, owner)` slugs the ticket title.

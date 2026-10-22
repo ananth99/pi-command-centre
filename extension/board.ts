@@ -37,7 +37,7 @@ export interface BoardWorker {
   updated_at?: string;
   last_nudge_at?: string;
   scan_prs?: string[];
-  evidence?: { pr?: string };
+  evidence?: { pr?: string; repo?: string };
   ci_state?: string;
   unresolved_thread_count?: number;
   session_status?: string;
@@ -55,6 +55,8 @@ export interface NeedsYouItem {
   why: Why;
   worker: string;
   ticket: string;
+  /** Short repo slug, e.g. "sfs", "retail". */
+  repo: string;
   prs: string[];
   anchor?: string;
   since?: string;
@@ -83,6 +85,38 @@ const EFFORT: Record<Why, { label: string; rank: number; doIt: string }> = {
   STALLED: { label: "\u2615 5m", rank: 1, doIt: "alt+i inspect, then alt+r or alt+k" },
   BLOCKED: { label: "\u{1F9F1} 30m+", rank: 2, doIt: "alt+i inspect, fix by hand" },
 };
+
+/**
+ * Short repo slug for the tables. PR numbers are per-repo, so `#992` alone is
+ * ambiguous across sfs/retail/ui/microservices. Handles both a plain checkout
+ * (/BitGo/bitgo-retail) and a worktree (/BitGo/bitgo-ui-worktree/<name>).
+ */
+const REPO_ALIASES: Record<string, string> = {
+  "stablecoin-fungibility-service": "sfs",
+  "bitgo-retail": "retail",
+  "bitgo-ui": "ui",
+  "bitgo-microservices": "microservices",
+  "bitgo-admin": "admin",
+  "client-admin": "client-admin",
+  "usd-tokenization-service": "uts",
+  "qa-automation": "qa",
+  "prime-microservices": "prime",
+  "sol-wallets": "sol",
+  "indexer": "indexer",
+  "infra": "infra",
+};
+
+export function shortRepo(repoPath: string | null | undefined): string {
+  if (!repoPath) return "";
+  const parts = repoPath.replace(/\/+$/, "").split("/").filter(Boolean);
+  const wtIndex = parts.findIndex((p) => p.endsWith("-worktree"));
+  const name =
+    wtIndex >= 0
+      ? parts[wtIndex]!.replace(/-worktree$/, "")
+      : (parts[parts.length - 1] ?? "");
+  if (!name) return "";
+  return REPO_ALIASES[name] ?? name.replace(/^bitgo-/, "");
+}
 
 export function normalizePr(ref: unknown): string {
   if (typeof ref !== "string") return ref == null ? "" : `#${ref}`;
@@ -139,6 +173,7 @@ export function deriveBoard(input: {
       why,
       worker: w.worker_id,
       ticket: w.linear_issue_id ?? w.worker_id,
+      repo: shortRepo(w.evidence?.repo),
       prs,
       anchor: w.evidence?.pr,
       since,

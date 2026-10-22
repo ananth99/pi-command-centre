@@ -32,6 +32,7 @@ import {
   oneLine,
   prChain,
   prsOf,
+  shortRepo,
   shortProject,
   todayStats,
   PRIORITY_LABEL,
@@ -270,7 +271,7 @@ export async function buildConsoleLines(cwd: string, width = 100): Promise<strin
     const m = meta(full.linear_issue_id);
     const ciText = ci === "green" ? tone.green("pass") : ci === "red" ? tone.red("FAIL") : ci === "running" ? tone.amber("run") : "-";
     ifRows.push([
-      `${full.linear_issue_id ?? full.worker_id}\n${tone.dim(prChain(prsOf(full), full.evidence?.pr))}`,
+      `${full.linear_issue_id ?? full.worker_id}\n${tone.dim([shortRepo(full.evidence?.repo), prChain(prsOf(full), full.evidence?.pr)].filter((x) => x && x !== "-").join(" "))}`,
       m.project,
       `CI ${ciText}\n${tone.dim("due")} ${m.due} ${tone.dim("\u00b7 est")} ${m.est}`,
       `${glyph} ${verdict}${threads}${sessText}\u00b7 ${nowText}`,
@@ -282,7 +283,7 @@ export async function buildConsoleLines(cwd: string, width = 100): Promise<strin
     const m = meta(full.linear_issue_id);
     const age = ageOf(full.updated_at, now);
     return [
-      `${full.linear_issue_id ?? full.worker_id}\n${tone.dim(prChain(prsOf(full), full.evidence?.pr))}`,
+      `${full.linear_issue_id ?? full.worker_id}\n${tone.dim([shortRepo(full.evidence?.repo), prChain(prsOf(full), full.evidence?.pr)].filter((x) => x && x !== "-").join(" "))}`,
       m.project,
       ageTone(age.text, age.hours),
       oneLine(full.summary || full.objective || "awaiting human review", 160),
@@ -358,7 +359,7 @@ export function formatConsole(s: ConsoleSnap, width: number): string[] {
           const age = ageOf(n.since, s.now);
           return [
             `${st.color(`${st.glyph} ${n.why}`)}\n${n.effort} ${tone.dim("\u00b7")} ${ageTone(age.text, age.hours)}`,
-            `${n.ticket}\n${tone.dim(prChain(n.prs, n.anchor))}`,
+            `${n.ticket}\n${tone.dim([n.repo, prChain(n.prs, n.anchor)].filter((x) => x && x !== "-").join(" "))}`,
             `${n.text}\n${tone.dim(`\u2192 ${n.doIt}`)}`,
           ];
         }),
