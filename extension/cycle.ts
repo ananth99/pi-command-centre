@@ -536,6 +536,8 @@ interface PrGateInfo {
   reviewDecision?: string;
   mergeStateStatus?: string;
   commitOk: boolean;
+  /** False when verification could not be read — callers must stay NEUTRAL. */
+  commitKnown: boolean;
 }
 
 function parseOwnerRepo(prUrl: string | undefined): string | null {
@@ -552,22 +554,40 @@ async function readPrGateInfo(w: WorkerCheckpoint, prNum: string): Promise<PrGat
   );
   const p = JSON.parse(stdout) as { state?: string; reviewDecision?: string; mergeStateStatus?: string };
 
-  let commitOk = false;
-  const slug = parseOwnerRepo((w.scan_prs ?? []).find((u) => u.includes(`/pull/${prNum}`)) ?? w.evidence?.pr);
-  if (slug) {
+  // Resolve the slug: from the PR url when we have one, else from the checkout.
+  let slug = parseOwnerRepo((w.scan_prs ?? []).find((u) => u.includes(`/pull/${prNum}`)) ?? w.evidence?.pr);
+  if (!slug) {
     try {
-      const { stdout: cOut } = await execFileAsync(
+      const { stdout: repoOut } = await execFileAsync(
         "gh",
-        ["api", `repos/${slug}/pulls/${prNum}/commits`],
-        { ...opts, timeout: 12_000 },
+        ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+        opts,
       );
-      const commits = JSON.parse(cOut) as Array<{ commit?: { verification?: { verified?: boolean | null } } }>;
-      commitOk = commits.length === 1 && commits.every((c) => c.commit?.verification?.verified === true);
+      slug = repoOut.trim() || null;
     } catch {
-      commitOk = false;
+      slug = null;
     }
   }
-  return { ...p, commitOk };
+
+  let commitOk = false;
+  let commitKnown = false;
+  if (slug) {
+    for (let attempt = 0; attempt < 2 && !commitKnown; attempt++) {
+      try {
+        const { stdout: cOut } = await execFileAsync(
+          "gh",
+          ["api", `repos/${slug}/pulls/${prNum}/commits`],
+          { ...opts, timeout: 12_000 },
+        );
+        const commits = JSON.parse(cOut) as Array<{ commit?: { verification?: { verified?: boolean | null } } }>;
+        commitOk = commits.length === 1 && commits.every((c) => c.commit?.verification?.verified === true);
+        commitKnown = true;
+      } catch {
+        // retry once; an unreadable signature is unknown, never "unsigned"
+      }
+    }
+  }
+  return { ...p, commitOk, commitKnown };
 }
 
 export async function probeAgentSessions(cwd: string): Promise<void> {
@@ -657,12 +677,13 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
           if (prNum && w.evidence?.repo) {
             try {
               const p = await readPrGateInfo(w, prNum);
-              const commitOk = p.commitOk;
+              // Unknown signature (unreadable) → neither park nor blame; retry next tick.
               if (
+                p.commitKnown &&
+                p.commitOk &&
                 p.state === "OPEN" &&
                 p.reviewDecision === "REVIEW_REQUIRED" &&
-                p.mergeStateStatus !== "DIRTY" &&
-                commitOk
+                p.mergeStateStatus !== "DIRTY"
               ) {
                 w.status = "landing";
                 w.action = "LANDING";
@@ -689,7 +710,12 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
               const commitOk = p.commitOk;
               const ciOk = p.mergeStateStatus !== "DIRTY";
               const stillParked = p.state === "OPEN" && p.reviewDecision === "REVIEW_REQUIRED" && ciOk && commitOk;
-              if (!stillParked) {
+              if (!stillParked && !p.commitKnown) {
+                // Signature unreadable: stay parked. Unparking would emit a
+                // SIGN_SQUASH for a commit we couldn't actually inspect.
+                w.summary = `PR #${prNum} signature unreadable — retrying next tick`;
+                await writeJson(join(paths.workersDir, `${w.worker_id}.json`), w);
+              } else if (!stillParked) {
                 w.status = "working";
                 w.action = "UNPARKED";
                 w.summary = !commitOk

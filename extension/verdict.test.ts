@@ -316,3 +316,48 @@ test("fresh CI failure posts /fix-ci deterministically (no LLM)", () => {
   assert.equal(v.verdict, "FIX_CI");
   assert.equal(v.needsRender, false, "tick posts /fix-ci itself");
 });
+test("incident: unreadable signature is UNKNOWN, not unsigned — never a false SIGN_SQUASH", () => {
+  // SCAAS-11715: a failed REST read recorded verified:false and the engine
+  // demanded a re-sign of an already-signed commit, 6 times, each rewrite
+  // cancelling CI. Unknown must skip the signature rule, not accuse.
+  const f = facts({
+    prs: [
+      pr({
+        commitOk: false,
+        commits: [
+          { sha: "7bea5e1e", authorName: "S", committerName: "bot", verified: false,
+            verificationKnown: false, coAuthoredByHuman: true },
+        ],
+      }),
+    ],
+    ciState: "approval_pending",
+  });
+  const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
+  assert.notEqual(v.verdict, "SIGN_SQUASH");
+  assert.notEqual(v.verdict, "ATTRIBUTION_FIX");
+});
+
+test("a KNOWN-bad signature still fires SIGN_SQUASH", () => {
+  const f = facts({
+    prs: [
+      pr({
+        commitOk: false,
+        commits: [
+          { sha: "deadbeef", authorName: "S", committerName: "bot", verified: false,
+            verificationKnown: true, coAuthoredByHuman: true },
+        ],
+      }),
+    ],
+    ciState: "approval_pending",
+  });
+  const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
+  assert.equal(v.verdict, "SIGN_SQUASH");
+});
+
+test("incident: an EMPTY commit list is unknown, not '0 commits (need exactly 1)'", () => {
+  // facts.ts reads the commit sha list via GraphQL; a failed fetch yields [].
+  // `length !== 1` then reads as "multi" and fabricates a SIGN_SQUASH.
+  const f = facts({ prs: [pr({ commitOk: false, commits: [] })], ciState: "approval_pending" });
+  const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
+  assert.notEqual(v.verdict, "SIGN_SQUASH");
+});

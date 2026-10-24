@@ -44,6 +44,13 @@ export interface CommitFact {
   committerName: string;
   /** REST-verified signature state — the ONLY trusted source. */
   verified: boolean;
+  /**
+   * False when the REST read FAILED, so `verified: false` means "unknown",
+   * not "unsigned". A transient gh/api hiccup must never fabricate a signature
+   * problem — that is the false-SIGN_SQUASH class (SCAAS-11715). Undefined on
+   * fixtures means known.
+   */
+  verificationKnown?: boolean;
   /** Co-authored-by trailer present in the commit message. */
   coAuthoredByHuman: boolean;
 }
@@ -228,23 +235,35 @@ async function gatherPrFacts(
     for (const c of pr.commits ?? []) {
       const sha = c.oid;
       if (!sha) continue;
-      try {
-        const cr = await deps.exec("gh", ["api", `repos/${repoFullName}/commits/${sha}`, "--jq",
-          JSON.stringify({author: ".commit.author.name", committer: ".commit.committer.name",
-                          verified: ".commit.verification.verified", message: ".commit.message"})], { cwd: repoPath });
-        // gh --jq with an object literal isn't valid; use fields directly.
-        const raw = await deps.exec("gh", ["api", `repos/${repoFullName}/commits/${sha}`,
-          "--jq", "[.commit.author.name, .commit.committer.name, .commit.verification.verified, .commit.message]"], { cwd: repoPath });
-        const arr = safeJson<[string | null, string | null, boolean | null, string | null]>(raw.stdout);
+      let read = false;
+      for (let attempt = 0; attempt < 2 && !read; attempt++) {
+        try {
+          const raw = await deps.exec("gh", ["api", `repos/${repoFullName}/commits/${sha}`,
+            "--jq", "[.commit.author.name, .commit.committer.name, .commit.verification.verified, .commit.message]"], { cwd: repoPath });
+          const arr = safeJson<[string | null, string | null, boolean | null, string | null]>(raw.stdout);
+          if (!arr) continue;
+          commits.push({
+            sha,
+            authorName: arr[0] ?? "",
+            committerName: arr[1] ?? "",
+            verified: arr[2] === true,
+            coAuthoredByHuman: /Co-authored-by:/i.test(arr[3] ?? ""),
+            verificationKnown: true,
+          });
+          read = true;
+        } catch {
+          // retry once; a failed read must not be mistaken for an unsigned commit
+        }
+      }
+      if (!read) {
         commits.push({
           sha,
-          authorName: arr?.[0] ?? "",
-          committerName: arr?.[1] ?? "",
-          verified: arr?.[2] === true,
-          coAuthoredByHuman: /Co-authored-by:/i.test(arr?.[3] ?? ""),
+          authorName: "",
+          committerName: "",
+          verified: false,
+          coAuthoredByHuman: false,
+          verificationKnown: false,
         });
-      } catch {
-        commits.push({ sha, authorName: "", committerName: "", verified: false, coAuthoredByHuman: false });
       }
     }
 

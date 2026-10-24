@@ -12,6 +12,13 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### A failed read is never a verdict
+Swept every GitHub read for the false-accusation class — a missing signal treated as a negative one. Three found and closed:
+- **`facts.ts` recorded an unreadable commit as `verified: false`.** A transient `gh api` failure therefore looked exactly like an unsigned commit and produced `SIGN_SQUASH`. Commits now carry `verificationKnown`; the read retries once, and an unknown signature **skips** rule 4 instead of accusing.
+- **An empty commit list read as "multiple commits".** `facts.ts` fetches the sha list via GraphQL; a failed fetch yields `[]`, and `length !== 1` meant the agent was told it had "0 commits (need exactly 1)". Empty is now unknown.
+- **The landing lane (my own new helper) failed closed the same way** — a failed verification read set `commitOk = false`, which unparked the worker and triggered the very render we were fixing. It now reports `commitKnown`, retries once, resolves the repo slug from the checkout when the PR URL is missing, and callers stay **neutral** on unknown: they neither park nor unpark.
+- 3 regression tests. The rule: **unknown means do nothing and re-read, never punish.**
+
 ### Landing lane: read commit verification from REST
 - **The landing lane was calling commits via GraphQL and so rejected every signed commit.** `gh pr view --json commits` returns `commit.verification.verified = null`, so a single signed commit looked unsigned. Both landing-lane call sites (park-on-finish, and the unpark guard) used it, which meant a clean worker got repeatedly unparked and told to `SIGN_SQUASH` — each re-sign rewriting the head and cancelling CI. SCAAS-11715 accumulated 3 unparks and 6 SIGN_SQUASH renders over one commit that was, and had always been, `verified=true`.
 - The verdict engine already read REST; the landing lane now does too, via one shared `readPrGateInfo()` that fetches PR state from `gh pr view` (no commits) and verification from `gh api repos/<owner>/<repo>/pulls/<n>/commits`. Regression test asserts the GraphQL commits projection never comes back.

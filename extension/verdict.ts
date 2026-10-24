@@ -172,6 +172,16 @@ export function decideVerdict(
   for (const pr of open) {
     if (pr.commitOk) continue;
     const multi = pr.commits.length !== 1;
+    // A commit whose verification READ FAILED is unknown, not unsigned. Acting on
+    // it nags the agent about a signature that may be perfectly valid — the
+    // false-SIGN_SQUASH class that cost SCAAS-11715 six renders and three unparks.
+    // Unknown signature → skip rule 4 this tick; the next tick re-reads.
+    // Also unknown: an empty list. A failed GraphQL commit fetch yields [],
+    // and `length !== 1` would then accuse the agent of having 0 commits
+    // (need exactly 1) — a fabricated SIGN_SQUASH.
+    const signatureUnknown =
+      pr.commits.length === 0 || pr.commits.some((c) => c.verificationKnown === false);
+    if (signatureUnknown) continue;
     const unsigned = pr.commits.length >= 1 && !pr.commits.every((c) => c.verified);
     if (multi || unsigned) {
       return guarded(
