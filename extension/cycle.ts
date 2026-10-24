@@ -520,6 +520,56 @@ export async function autoCloseMergedWorkers(cwd: string): Promise<void> {
 
 /** Mark a worker done and drop it from the boards. */
 
+/**
+ * PR gate info for the landing lane, with commit verification read from REST.
+ *
+ * `gh pr view --json commits` returns the GraphQL projection, where
+ * `commit.verification.verified` is `null` — so a perfectly signed commit looks
+ * unsigned. Both landing-lane call sites used it, which meant every worker with
+ * one verified commit got repeatedly unparked and told to squash+sign
+ * (SCAAS-11715: 3 unparks + 6 SIGN_SQUASH renders, each re-sign rewriting the
+ * head and cancelling CI). The verdict engine already reads REST; this makes
+ * the landing lane agree with it.
+ */
+interface PrGateInfo {
+  state?: string;
+  reviewDecision?: string;
+  mergeStateStatus?: string;
+  commitOk: boolean;
+}
+
+function parseOwnerRepo(prUrl: string | undefined): string | null {
+  const m = prUrl?.match(/github\.com\/([^/]+)\/([^/]+)\/pull\//);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+async function readPrGateInfo(w: WorkerCheckpoint, prNum: string): Promise<PrGateInfo> {
+  const opts = { cwd: w.evidence?.repo, timeout: 10_000, maxBuffer: 4 * 1024 * 1024 };
+  const { stdout } = await execFileAsync(
+    "gh",
+    ["pr", "view", prNum, "--json", "state,reviewDecision,mergeStateStatus"],
+    opts,
+  );
+  const p = JSON.parse(stdout) as { state?: string; reviewDecision?: string; mergeStateStatus?: string };
+
+  let commitOk = false;
+  const slug = parseOwnerRepo((w.scan_prs ?? []).find((u) => u.includes(`/pull/${prNum}`)) ?? w.evidence?.pr);
+  if (slug) {
+    try {
+      const { stdout: cOut } = await execFileAsync(
+        "gh",
+        ["api", `repos/${slug}/pulls/${prNum}/commits`],
+        { ...opts, timeout: 12_000 },
+      );
+      const commits = JSON.parse(cOut) as Array<{ commit?: { verification?: { verified?: boolean | null } } }>;
+      commitOk = commits.length === 1 && commits.every((c) => c.commit?.verification?.verified === true);
+    } catch {
+      commitOk = false;
+    }
+  }
+  return { ...p, commitOk };
+}
+
 export async function probeAgentSessions(cwd: string): Promise<void> {
   const checkpoints = await readWorkerCheckpoints(cwd);
   const paths = await ensureState(cwd);
@@ -606,20 +656,8 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
           const prNum = pr.match(/(\d+)/)?.[1];
           if (prNum && w.evidence?.repo) {
             try {
-              const { stdout: prOut } = await execFileAsync(
-                "gh",
-                ["pr", "view", prNum, "--json", "state,reviewDecision,mergeStateStatus,commits"],
-                { cwd: w.evidence.repo, timeout: 8000, maxBuffer: 4 * 1024 * 1024 },
-              );
-              const p = JSON.parse(prOut) as {
-                state?: string;
-                reviewDecision?: string;
-                mergeStateStatus?: string;
-                commits?: Array<{ commit?: { verification?: { verified?: boolean | null } } }>;
-              };
-              const commitOk =
-                (p.commits?.length ?? 0) === 1 &&
-                (p.commits ?? []).every((c) => c?.commit?.verification?.verified === true);
+              const p = await readPrGateInfo(w, prNum);
+              const commitOk = p.commitOk;
               if (
                 p.state === "OPEN" &&
                 p.reviewDecision === "REVIEW_REQUIRED" &&
@@ -646,22 +684,9 @@ export async function probeAgentSessions(cwd: string): Promise<void> {
           const prNum = pr.match(/(\d+)/)?.[1];
           const repoPath = w.evidence?.repo;
           if (prNum && repoPath) {
-            const opts = { cwd: repoPath, timeout: 8000, maxBuffer: 4 * 1024 * 1024 };
             try {
-              const { stdout: prOut } = await execFileAsync(
-                "gh",
-                ["pr", "view", prNum, "--json", "state,reviewDecision,mergeStateStatus,commits"],
-                opts,
-              );
-              const p = JSON.parse(prOut) as {
-                state?: string;
-                reviewDecision?: string;
-                mergeStateStatus?: string;
-                commits?: Array<{ commit?: { verification?: { verified?: boolean | null } } }>;
-              };
-              const commitOk =
-                (p.commits?.length ?? 0) === 1 &&
-                (p.commits ?? []).every((c) => c?.commit?.verification?.verified === true);
+              const p = await readPrGateInfo(w, prNum);
+              const commitOk = p.commitOk;
               const ciOk = p.mergeStateStatus !== "DIRTY";
               const stillParked = p.state === "OPEN" && p.reviewDecision === "REVIEW_REQUIRED" && ciOk && commitOk;
               if (!stillParked) {

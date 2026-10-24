@@ -12,6 +12,10 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### Landing lane: read commit verification from REST
+- **The landing lane was calling commits via GraphQL and so rejected every signed commit.** `gh pr view --json commits` returns `commit.verification.verified = null`, so a single signed commit looked unsigned. Both landing-lane call sites (park-on-finish, and the unpark guard) used it, which meant a clean worker got repeatedly unparked and told to `SIGN_SQUASH` — each re-sign rewriting the head and cancelling CI. SCAAS-11715 accumulated 3 unparks and 6 SIGN_SQUASH renders over one commit that was, and had always been, `verified=true`.
+- The verdict engine already read REST; the landing lane now does too, via one shared `readPrGateInfo()` that fetches PR state from `gh pr view` (no commits) and verification from `gh api repos/<owner>/<repo>/pulls/<n>/commits`. Regression test asserts the GraphQL commits projection never comes back.
+
 ### Repo slugs in the tables
 - PR numbers are per-repo, so `#992` alone was ambiguous across sfs/retail/ui/microservices. NEEDS YOU, AWAITING REVIEW and IN FLIGHT now show a short repo slug beside the PR chain: `SCAAS-11445` / `retail #10781 +3`. `shortRepo()` handles both plain checkouts and worktrees (`BitGo/bitgo-ui-worktree/<name>` → `ui`, not the worktree name).
 
