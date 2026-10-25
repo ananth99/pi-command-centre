@@ -75,6 +75,8 @@ export interface PrFact {
   /** Both Humans-In-The-Loop gate heads: attribution/commitOk AND approved. */
   hitlGateOk: boolean;
   threads: ThreadFact[];
+  /** Resolved threads whose final comment is from a human. */
+  humanLastWordThreadIds?: string[];
 }
 
 export type CiState = "green" | "red" | "running" | "approval_pending" | "unknown";
@@ -91,6 +93,14 @@ export interface WorkerFacts {
   ciState: CiState;
   /** Unresolved thread ids: not in the addressed latch. */
   unresolvedThreadIds: string[];
+  /**
+   * Threads GitHub marks RESOLVED whose last comment is from a human — a
+   * question left unanswered because replying to a resolved thread does not
+   * reopen it (SCAAS-11576: ananth99's question sat unanswered for a day while
+   * CC skipped every resolved thread). Measured at 1 of 11 threads across eight
+   * live PRs, so it is precise rather than noisy.
+   */
+  humanLastWordThreadIds: string[];
 }
 
 /** Extract a PR number from "#964", a URL, or a bare number. */
@@ -200,6 +210,7 @@ export async function gatherFacts(
 
   const ciState = deriveCiState(prs);
   const unresolvedThreadIds = prs.flatMap((p) => p.threads.map((t) => t.id));
+  const humanLastWordThreadIds = prs.flatMap((p) => p.humanLastWordThreadIds ?? []);
 
   return {
     workerId: checkpoint.worker_id,
@@ -210,6 +221,7 @@ export async function gatherFacts(
     anchorNum,
     ciState,
     unresolvedThreadIds,
+    humanLastWordThreadIds,
   };
 }
 
@@ -232,6 +244,7 @@ async function gatherPrFacts(
 
     // REST verification per commit — the authoritative read.
     const commits: CommitFact[] = [];
+    const humanLastWord: string[] = [];
     for (const c of pr.commits ?? []) {
       const sha = c.oid;
       if (!sha) continue;
@@ -282,15 +295,30 @@ async function gatherPrFacts(
     }
     try {
       const [gqlOwner, gqlRepo] = repoFullName.split("/");
-      const gqlQuery = `query { repository(owner:"${gqlOwner}",name:"${gqlRepo}") { pullRequest(number:${num}) { reviewThreads(first:100) { nodes { isResolved comments(first:1) { nodes { databaseId createdAt author { login } } } } } } } }`;
+      // first = stable thread identity; last = who actually had the final word.
+      const gqlQuery = `query { repository(owner:"${gqlOwner}",name:"${gqlRepo}") { pullRequest(number:${num}) { reviewThreads(first:100) { nodes { isResolved comments(first:1) { nodes { databaseId } } lastComment: comments(last:1) { nodes { createdAt author { login } } } } } } } }`;
       const tr = await deps.exec("gh", ["api", "graphql", "-f", `query=${gqlQuery}`], { cwd: repoPath });
       const gqlData = safeJson<any>(tr.stdout);
-      const reviewThreadNodes: Array<{ isResolved: boolean; comments: { nodes: Array<{ databaseId: number; createdAt: string; author: { login: string } }> } }> =
-        gqlData?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+      const reviewThreadNodes: Array<{
+        isResolved: boolean;
+        comments: { nodes: Array<{ databaseId: number }> };
+        lastComment: { nodes: Array<{ createdAt: string; author: { login: string } }> };
+      }> = gqlData?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
       for (const rt of reviewThreadNodes) {
-        if (rt.isResolved) continue; // ← the fix: skip resolved threads
         const first = rt.comments?.nodes?.[0];
-        if (first) threads.push({ id: String(first.databaseId), kind: "review", lastCommentAt: first.createdAt });
+        const last = rt.lastComment?.nodes?.[0];
+        if (!first) continue;
+        const id = String(first.databaseId);
+        const lastAuthor = last?.author?.login ?? "";
+        const lastAt = last?.createdAt ?? "";
+        if (!rt.isResolved) {
+          threads.push({ id, kind: "review", lastCommentAt: lastAt });
+        } else if (lastAuthor && !isBotLogin(lastAuthor)) {
+          // Resolved, but a human asked the final question. Replying to a
+          // resolved thread does not reopen it, so nothing else will catch this.
+          humanLastWord.push(id);
+          threads.push({ id, kind: "review", lastCommentAt: lastAt });
+        }
       }
     } catch { /* none */ }
     try {
@@ -314,6 +342,7 @@ async function gatherPrFacts(
       commitOk,
       hitlGateOk: commitOk && reviewApproved,
       threads,
+      humanLastWordThreadIds: humanLastWord,
     };
   } catch {
     return null;
@@ -388,6 +417,11 @@ export function slugForBranch(title: string | undefined): string {
     .filter((w) => w && !/^(the|a|an|and|for|of|to|with|within|via)$/.test(w));
   // 2-6 words is the accepted range; take up to 4 for a branch that stays readable.
   return words.slice(0, 4).join("-").slice(0, 40).replace(/-+$/, "");
+}
+
+/** Bot accounts: `[bot]` suffix covers ralph-bitgo, github-actions, linear-code, dependabot. */
+export function isBotLogin(login: string): boolean {
+  return /\[bot\]$/i.test(login) || /^(github-actions|linear-code|dependabot|copilot|ralph-bitgo)$/i.test(login);
 }
 
 export function branchConforming(headRefName: string | null, ticket: string): boolean {

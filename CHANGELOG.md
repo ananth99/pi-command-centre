@@ -12,6 +12,11 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### A human's question in a resolved thread is not invisible
+- **Found why a review comment went unanswered for a day.** CC skipped every resolved review thread (`if (rt.isResolved) continue`). GitHub does **not** reopen a thread when you reply to it, so a question asked in a resolved thread is invisible to CC *and* easy to miss in the GitHub UI. On `qa-automation#5599` a question sat with no reply while CC produced only unrelated noise.
+- Threads are now classified: unresolved (as before), or **resolved with a human having the last word** — the latter is a new `humanLastWordThreadIds` signal. Both nudge; both block parking; both count for the CHANGES_REQUESTED hands-off rule. Measured at **1 of 11 threads across eight live PRs**, so it is precise, not noisy.
+- Also fixed: the thread scan read `comments(first:1)`, so `lastCommentAt` was really the *first* comment's time — meaning "activity since park" could never see a later reply. It now reads `comments(last:1)` for the author/timestamp while keeping the first comment's id as the stable thread identity.
+
 ### The park/unpark pendulum
 - **Found the system's largest source of churn: 1333 unparks across 8 workers.** `ralph-11576` alone cycled 441 times in 7.1 days — one park/unpark every 23 minutes — over three PRs whose commits were all `verified=true` in REST and `null` in GraphQL. The landing guard unparked on the GraphQL null, the verdict engine (REST-correct) re-parked, forever. 33 of those cycles spawned a `SIGN_SQUASH` render telling the agent to re-sign an already-signed commit; each `sign-pr` rewrites the head and cancels CI. Fixed by the REST change above.
 - **Underneath it, a latent second pendulum.** Rule 3 unparks a parked worker when it has unresolved review threads; rule 10 re-parked without checking them — so any parked PR with open threads would ping-pong indefinitely. Rule 10 now requires `unresolvedThreadIds.length === 0`, matching rule 3. Regression test feeds the unpark result straight back and asserts no re-park.

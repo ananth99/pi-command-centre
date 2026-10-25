@@ -380,3 +380,39 @@ test("incident: parked worker with unresolved threads must NOT oscillate park<->
   const next = decideVerdict(withThreads(), cp({ status: "working", action: "UNPARKED" }), NOW);
   assert.notEqual(next.verdict, "LANDING", "must not re-park while threads are unresolved");
 });
+
+test("incident: a human's question in a RESOLVED thread still needs an answer", () => {
+  // SCAAS-11576 / qa-automation#5599: ananth99 replied to a resolved thread.
+  // GitHub does not reopen it, CC skipped resolved threads, so the question was
+  // never surfaced. Resolved + human-last-word must nudge.
+  const f = facts({
+    sessionStatus: "complete",
+    ciState: "approval_pending",
+    unresolvedThreadIds: [],
+    humanLastWordThreadIds: ["4366854492"],
+  });
+  const v = decideVerdict(f, cp({ status: "working", action: "WAIT" }), NOW);
+  assert.equal(v.verdict, "NUDGE_THREADS");
+  assert.ok(/last word/i.test(v.reason), `reason should explain it: ${v.reason}`);
+});
+
+test("no threads at all → no NUDGE_THREADS", () => {
+  const f = facts({
+    sessionStatus: "complete",
+    ciState: "approval_pending",
+    unresolvedThreadIds: [],
+    humanLastWordThreadIds: [],
+  });
+  const v = decideVerdict(f, cp({ status: "working", action: "WAIT" }), NOW);
+  assert.notEqual(v.verdict, "NUDGE_THREADS");
+});
+
+test("isBotLogin distinguishes bots from humans", async () => {
+  const { isBotLogin } = await import("./facts.ts");
+  for (const b of ["ralph-bitgo[bot]", "github-actions[bot]", "linear-code[bot]", "dependabot[bot]", "ralph-bitgo"]) {
+    assert.equal(isBotLogin(b), true, `${b} is a bot`);
+  }
+  for (const h of ["ananth99", "deiva-s", "prasunkumar575"]) {
+    assert.equal(isBotLogin(h), false, `${h} is human`);
+  }
+});

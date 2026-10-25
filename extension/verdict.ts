@@ -140,7 +140,8 @@ export function decideVerdict(
       facts.ciState !== "red" &&
       open.every((p) => p.reviewDecision === "REVIEW_REQUIRED") &&
       !threadActivitySincePark &&
-      facts.unresolvedThreadIds.length === 0;
+      facts.unresolvedThreadIds.length === 0 &&
+      (facts.humanLastWordThreadIds ?? []).length === 0;
     if (!stillParkable) {
       const why = threadActivitySincePark
         ? "new review-thread activity since park"
@@ -275,7 +276,7 @@ export function decideVerdict(
   const changesRequested = open.some((p) => p.reviewDecision === "CHANGES_REQUESTED");
   if (
     changesRequested &&
-    facts.unresolvedThreadIds.length > 0 &&
+    (facts.unresolvedThreadIds.length > 0 || (facts.humanLastWordThreadIds ?? []).length > 0) &&
     facts.sessionStatus === "active"
   ) {
     return {
@@ -286,12 +287,27 @@ export function decideVerdict(
     };
   }
 
-  // ── 7. Unresolved review threads (not in the addressed latch).
-  if (facts.unresolvedThreadIds.length > 0) {
+  // ── 7. Review threads needing a reply.
+  //    Two kinds: genuinely unresolved, and resolved threads whose last word was
+  //    a human's. The second kind is invisible everywhere else — GitHub does not
+  //    reopen a thread when you reply to it, so a question can sit unanswered
+  //    forever (SCAAS-11576: ananth99 asked on #5599 and CC never saw it because
+  //    it skipped every resolved thread).
+  const openThreads = facts.unresolvedThreadIds.length;
+  const humanLast = (facts.humanLastWordThreadIds ?? []).filter(
+    (id) => !facts.unresolvedThreadIds.includes(id),
+  ).length;
+  if (openThreads > 0 || humanLast > 0) {
+    const reason =
+      openThreads && humanLast
+        ? `${openThreads} unresolved + ${humanLast} resolved-with-a-human-question thread(s)`
+        : openThreads
+          ? `${openThreads} unresolved thread(s)`
+          : `${humanLast} thread(s) resolved but the human had the last word — answer it`;
     return guarded(
       {
         verdict: "NUDGE_THREADS",
-        reason: `${facts.unresolvedThreadIds.length} unresolved thread(s)`,
+        reason,
         needsRender: true,
         writes: { ...baseWrites(true) },
       },
@@ -343,6 +359,7 @@ export function decideVerdict(
     open.every((p) => p.commitOk) &&
     open.every((p) => p.reviewDecision === "REVIEW_REQUIRED") &&
     facts.unresolvedThreadIds.length === 0 &&
+    (facts.humanLastWordThreadIds ?? []).length === 0 &&
     (facts.ciState === "approval_pending" || facts.ciState === "green");
   if (parkable) {
     return {
