@@ -361,3 +361,22 @@ test("incident: an EMPTY commit list is unknown, not '0 commits (need exactly 1)
   const v = decideVerdict(f, cp({ action: "WAIT" }), NOW);
   assert.notEqual(v.verdict, "SIGN_SQUASH");
 });
+
+test("incident: parked worker with unresolved threads must NOT oscillate park<->unpark", () => {
+  // Rule 3 unparks on unresolved threads; rule 10 used to re-park regardless,
+  // so the two ping-ponged every tick (11576: 441 unparks / 425 re-parks).
+  const withThreads = () =>
+    facts({
+      sessionStatus: "complete",
+      ciState: "approval_pending",
+      unresolvedThreadIds: ["t1"],
+      prs: [pr({ threads: [{ id: "t1", resolved: false, isBot: false }, ...[]] })],
+    });
+
+  const parked = decideVerdict(withThreads(), cp({ status: "landing", action: "LANDING" }), NOW);
+  assert.equal(parked.verdict, "UNPARK", "a parked worker with open threads resumes");
+
+  // Feed the unparked result back: it must NOT immediately re-park.
+  const next = decideVerdict(withThreads(), cp({ status: "working", action: "UNPARKED" }), NOW);
+  assert.notEqual(next.verdict, "LANDING", "must not re-park while threads are unresolved");
+});

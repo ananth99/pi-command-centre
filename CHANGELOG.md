@@ -12,6 +12,10 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### The park/unpark pendulum
+- **Found the system's largest source of churn: 1333 unparks across 8 workers.** `ralph-11576` alone cycled 441 times in 7.1 days — one park/unpark every 23 minutes — over three PRs whose commits were all `verified=true` in REST and `null` in GraphQL. The landing guard unparked on the GraphQL null, the verdict engine (REST-correct) re-parked, forever. 33 of those cycles spawned a `SIGN_SQUASH` render telling the agent to re-sign an already-signed commit; each `sign-pr` rewrites the head and cancels CI. Fixed by the REST change above.
+- **Underneath it, a latent second pendulum.** Rule 3 unparks a parked worker when it has unresolved review threads; rule 10 re-parked without checking them — so any parked PR with open threads would ping-pong indefinitely. Rule 10 now requires `unresolvedThreadIds.length === 0`, matching rule 3. Regression test feeds the unpark result straight back and asserts no re-park.
+
 ### A failed read is never a verdict
 Swept every GitHub read for the false-accusation class — a missing signal treated as a negative one. Three found and closed:
 - **`facts.ts` recorded an unreadable commit as `verified: false`.** A transient `gh api` failure therefore looked exactly like an unsigned commit and produced `SIGN_SQUASH`. Commits now carry `verificationKnown`; the read retries once, and an unknown signature **skips** rule 4 instead of accusing.

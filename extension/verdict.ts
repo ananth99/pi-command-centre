@@ -333,11 +333,16 @@ export function decideVerdict(
   }
 
   // ── 10. Agent finished; PR open, attributed, clean — park it.
+  // Rule 10 must agree with rule 3, or a parked worker oscillates: rule 3
+  // unparks on unresolved threads, rule 10 re-parks without checking them, and
+  // the pair ping-pongs forever (the 11576/11716 park-unpark pendulum). Threads
+  // the agent must answer mean the work is not finished, so rule 10 declines.
   const parkable =
     facts.sessionStatus === "complete" &&
     open.length > 0 &&
     open.every((p) => p.commitOk) &&
     open.every((p) => p.reviewDecision === "REVIEW_REQUIRED") &&
+    facts.unresolvedThreadIds.length === 0 &&
     (facts.ciState === "approval_pending" || facts.ciState === "green");
   if (parkable) {
     return {
