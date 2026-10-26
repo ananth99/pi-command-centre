@@ -416,3 +416,37 @@ test("isBotLogin distinguishes bots from humans", async () => {
     assert.equal(isBotLogin(h), false, `${h} is human`);
   }
 });
+
+test("incident: a stale cannot_do must NOT latch a terminal verdict forever", () => {
+  // SCAAS-11712: cannot_do was latched from a reply about a CLOSED PR. The
+  // worker was later repointed at a live PR and the code was fixed, but rule 0
+  // (highest priority, cleared only by a human reply) kept it terminal for 4 days.
+  const f = facts({ sessionStatus: "complete", lastActivityAt: "2026-10-26T09:00:00Z", ciState: "approval_pending" });
+
+  // The agent has spoken SINCE the classification → the class is stale.
+  const staleByActivity = decideVerdict(
+    f,
+    cp({ reply_class: "cannot_do", reply_class_at: "2026-10-22T20:00:00Z", expected_pr: "#964" }),
+    NOW,
+  );
+  assert.notEqual(staleByActivity.verdict, "BLOCKED_IMPOSSIBILITY");
+
+  // The worker was repointed at a different PR → the class is void.
+  const staleByPr = decideVerdict(
+    f,
+    cp({ reply_class: "cannot_do", reply_class_at: "2026-10-26T10:00:00Z", reply_class_pr: "#63767", expected_pr: "#63763" }),
+    NOW,
+  );
+  assert.notEqual(staleByPr.verdict, "BLOCKED_IMPOSSIBILITY");
+});
+
+test("a FRESH cannot_do still blocks the worker for the human", () => {
+  const f = facts({ sessionStatus: "complete", lastActivityAt: "2026-09-27T11:00:00Z", ciState: "approval_pending" });
+  const v = decideVerdict(
+    f,
+    cp({ reply_class: "cannot_do", reply_class_at: "2026-09-27T11:30:00Z", reply_class_pr: "#964", expected_pr: "#964" }),
+    NOW,
+  );
+  assert.equal(v.verdict, "BLOCKED_IMPOSSIBILITY");
+  assert.ok(v.needsYou);
+});

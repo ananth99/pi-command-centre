@@ -50,6 +50,8 @@ export interface VerdictCheckpointShape {
   wait_streak?: number;
   repeat_failures?: number;
   reply_class?: string;
+  reply_class_at?: string;
+  reply_class_pr?: string;
   do_not_rename?: boolean;
   rename_attempts?: number;
 }
@@ -92,7 +94,22 @@ export function decideVerdict(
   const anchor = open.find((p) => p.num === facts.anchorNum) ?? open[open.length - 1] ?? null;
 
   // ── 0. Impossibility: the agent explicitly said it cannot do the task.
-  if (checkpoint.reply_class === "cannot_do") {
+  //
+  // The latch must EXPIRE. This rule outranks everything, and the only other
+  // thing that clears reply_class is a human reply (actions.ts), so a stale
+  // classification used to freeze a worker permanently — re-applying
+  // BLOCKED_IMPOSSIBILITY every tick while the world moved on. It is now scoped
+  // to the activity it came from and the PR it was about: if the agent has
+  // spoken since, or the worker was repointed, the verdict no longer applies.
+  const classStaleByActivity =
+    !!checkpoint.reply_class_at &&
+    !!facts.lastActivityAt &&
+    Date.parse(facts.lastActivityAt) > Date.parse(checkpoint.reply_class_at);
+  const classStaleByPr =
+    !!checkpoint.reply_class_pr &&
+    !!checkpoint.expected_pr &&
+    checkpoint.reply_class_pr !== checkpoint.expected_pr;
+  if (checkpoint.reply_class === "cannot_do" && !classStaleByActivity && !classStaleByPr) {
     return {
       verdict: "BLOCKED_IMPOSSIBILITY",
       reason: "agent declared the required action impossible",

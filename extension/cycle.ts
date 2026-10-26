@@ -101,9 +101,17 @@ export async function runVerdictCycle(ctx: { cwd: string }): Promise<void> {
           const top = found.reduce((a, b) => (Number(b.number) > Number(a.number) ? b : a));
           const prev = w.scan_prs ?? [];
           const rerolled = prev.length > 0 && !prev.some((p) => found.some((f) => f.url === p));
+          const repointed = !!w.expected_pr && w.expected_pr !== `#${top.number}`;
           w.scan_prs = found.map((f) => f.url);
           w.expected_pr = `#${top.number}`;
           w.evidence.pr = top.url;
+          // A classification about the OLD pr must not survive the repoint, or a
+          // stale cannot_do keeps the worker terminal on a PR it no longer tracks.
+          if (rerolled || repointed) {
+            w.reply_class = undefined;
+            w.reply_class_at = undefined;
+            w.reply_class_pr = undefined;
+          }
           await appendEvent(ctx.cwd, {
             type: rerolled ? "prs_rerolled" : "prs_discovered",
             worker_id: w.worker_id,

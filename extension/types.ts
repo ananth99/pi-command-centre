@@ -62,6 +62,16 @@ export interface WorkerCheckpoint {
   rename_attempts?: number;
   // v3 — code-verdicts fields (owned by tick/render worker, never the legacy prompt)
   reply_class?: string;
+  /**
+   * The createdAt of the agent activity that reply_class was derived from.
+   * Without it a "cannot_do" latches a terminal verdict FOREVER — rule 0 fires
+   * before every other rule and only a human reply clears it (SCAAS-11712: the
+   * latch outlived the PR it referred to by 4 days, and CC stayed mute while the
+   * worker was repointed at a live PR).
+   */
+  reply_class_at?: string;
+  /** The PR the classification was about; a PR change invalidates it. */
+  reply_class_pr?: string;
   wait_streak?: number;
   render_count?: number;
 }

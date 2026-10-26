@@ -12,6 +12,10 @@
 ### Unified beacon
 - The controller writes beacon state to `beacon.json`; reader sessions display the same line. All sessions now show identical data. Each beacon is tagged `🎛 ctrl` or `👁 reader` so you know which terminal is driving.
 
+### A stale classification can no longer freeze a worker
+- **`reply_class: "cannot_do"` latched a terminal verdict permanently.** Rule 0 is the highest-priority rule and the only other thing that clears the field is a human reply, so one stale classification outlived the world it described: SCAAS-11712 was classified `cannot_do` against a **closed** PR, then repointed at a live PR with the code fixed, and CC kept re-applying `BLOCKED_IMPOSSIBILITY` ~6×/hour for four days — mute, and un-revivable without hand-editing the checkpoint.
+- The classification is now scoped to its provenance: `reply_class_at` (the activity it was derived from) and `reply_class_pr` (the PR it was about). If the agent has spoken since, or the worker is repointed, the verdict expires and normal rules resume. The render prompt records both fields; the repoint path clears them. 2 regression tests (stale expires, fresh still blocks).
+
 ### A human's question in a resolved thread is not invisible
 - **Found why a review comment went unanswered for a day.** CC skipped every resolved review thread (`if (rt.isResolved) continue`). GitHub does **not** reopen a thread when you reply to it, so a question asked in a resolved thread is invisible to CC *and* easy to miss in the GitHub UI. On `qa-automation#5599` a question sat with no reply while CC produced only unrelated noise.
 - Threads are now classified: unresolved (as before), or **resolved with a human having the last word** — the latter is a new `humanLastWordThreadIds` signal. Both nudge; both block parking; both count for the CHANGES_REQUESTED hands-off rule. Measured at **1 of 11 threads across eight live PRs**, so it is precise, not noisy.
