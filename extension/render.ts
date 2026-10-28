@@ -63,7 +63,7 @@ export function buildRenderPrompt(p: RenderPromptParams): string {
     "",
     "## Job 1 — compose ONE comment to the agent",
     `@mention "${p.agentName}" explicitly (unmentioned comments are never picked up). Be specific from the facts: PR numbers, SHAs, thread URLs, exact failures. Shapes by verdict:`,
-    "  SIGN_SQUASH → name the offending commit + its verified state; squash to exactly one commit; sign via git sign-pr before push; note that re-signing rewrites the head (reviews dismiss).",
+    "  SIGN_SQUASH → name the offending commit + its verified state; squash to exactly one commit and sign it. State the REQUIREMENT only — one commit, signature verifiable via the REST API — and leave the mechanism to the agent. NEVER name a signing command, alias, or workflow: the agent runs in its own sandbox, and a human's local git alias does not exist there. Note that re-signing rewrites the head (reviews dismiss).",
     "  ATTRIBUTION_FIX → name the commit and the missing Co-authored-by supervisor trailer; the Humans In The Loop gate rejects AI commits without human attribution.",
     "  NUDGE_THREADS → instruct the agent to REPLY INLINE on each review thread URL from the facts (one reply per thread, on the thread itself). NEVER summarize answers in a top-level PR conversation comment. Never acknowledge bot comments; delete any such comments you already made.",
     "  REBASE → rebase onto master, retarget the PR base if stacked, single commit, re-sign.",

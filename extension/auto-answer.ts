@@ -189,7 +189,15 @@ function buildAutoAnswerPrompt(
     "",
     `Finally, write reply_class="auto_answered" into the checkpoint at the path provided, and append an event.`,
     "",
-    "Hard rules: @mention the agent by name. Be direct and specific. One answer, then stop.",
+    "Hard rules:",
+    "- @mention the agent by name. Be direct and specific. One answer, then stop.",
+    "- NEVER invent or assume local tooling. Do NOT tell the agent to create, define,",
+    "  install, or alias a command (no git aliases, no shell functions, no helper",
+    "  scripts). The agent runs in its own sandbox with its own tools — a command",
+    "  that works on the operator's laptop does not exist there. If the agent says",
+    "  something is unavailable, believe it and escalate to the human instead of",
+    "  suggesting it define the missing thing.",
+    "- State requirements, never mechanisms. 'One signed commit, verified' — not how to sign.",
   ].join("\n");
 }
 

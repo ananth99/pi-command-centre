@@ -226,3 +226,32 @@ test("needs-you items carry a repo slug", async () => {
   });
   assert.equal(b.needsYou[0]?.repo, "sfs");
 });
+
+// ── no local-only workflow may leak into agent-facing prompts ──────────
+
+test("no module tells the agent to use a local signing command or alias", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const banned = [/git sign-pr/i, /\bsign-pr\b/, /yubikey/i, /gpg-sign/i, /define the alias/i, /create an alias/i];
+  for (const f of ["render.ts", "prompts.ts", "auto-answer.ts"]) {
+    const src = await readFile(`${here}/${f}`, "utf8");
+    for (const line of src.split("\n")) {
+      for (const b of banned) {
+        assert.ok(!b.test(line), `${f}: local-only workflow leaked → ${line.trim().slice(0, 140)}`);
+      }
+    }
+  }
+});
+
+test("the render prompt states the signature requirement without naming a mechanism", async () => {
+  const { buildRenderPrompt } = await import("./render.ts");
+  const p = buildRenderPrompt({
+    workerId: "w", ticket: "TICKET-1", agentName: "the-agent",
+    verdict: "SIGN_SQUASH", reason: "head not REST-verified",
+    facts: { prs: [{ num: "1" }] }, checkpointPath: "/tmp/cp.json", eventsPath: "/tmp/ev.jsonl",
+  });
+  assert.ok(/REQUIREMENT only/i.test(p), "tells the renderer to state the requirement");
+  assert.ok(!/git sign-pr/i.test(p));
+});
